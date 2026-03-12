@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 FRED Macro Investment Timing Dashboard (Streamlit)
-- iPhone/web access via Streamlit Community Cloud
-- GitHub deploy friendly
-- FRED API key via Streamlit Secrets or environment variable
+- GitHub + Streamlit Community Cloud friendly
+- iPhone/web access
+- Additional Methodology tab:
+    1) how each parameter is calculated
+    2) detailed meaning / interpretation
+    3) regime scoring rules
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ REQUEST_TIMEOUT = 20
 MAX_RETRIES = 4
 BACKOFF_SEC = 1.5
 REQUEST_GAP_SEC = 0.35
+CACHE_TTL_SEC = 1800  # 30 min
 
 SERIES_META = {
     "WALCL": {"name": "Fed Balance Sheet", "category": "Liquidity", "unit": "Million USD"},
@@ -116,7 +120,6 @@ st.markdown(
 # 3) API KEY / FRED
 # =========================================================
 def load_api_key() -> str:
-    # 1) Streamlit secrets
     try:
         if "FRED_API_KEY" in st.secrets:
             key = str(st.secrets["FRED_API_KEY"]).strip()
@@ -125,12 +128,10 @@ def load_api_key() -> str:
     except Exception:
         pass
 
-    # 2) Environment variable
     env_key = os.getenv("FRED_API_KEY")
     if env_key and env_key.strip():
         return env_key.strip()
 
-    # 3) Local file for local development only
     local_path = os.path.join(os.getcwd(), "API_KEY.txt")
     if os.path.exists(local_path):
         with open(local_path, "r", encoding="utf-8") as f:
@@ -209,6 +210,7 @@ def fetch_all_series(api_key: str, start_date: str) -> dict[str, pd.DataFrame]:
             )
         except Exception:
             out[sid] = pd.DataFrame(columns=["date", sid])
+
         time.sleep(REQUEST_GAP_SEC)
 
     return out
@@ -462,7 +464,232 @@ def build_status_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================================================
-# 6) FIGURES
+# 6) METHODOLOGY TABLES
+# =========================================================
+def build_parameter_definition_table() -> pd.DataFrame:
+    rows = [
+        {
+            "Parameter": "WALCL",
+            "Meaning": "Federal Reserve total assets (Fed balance sheet).",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Higher balance sheet can imply more liquidity support.",
+        },
+        {
+            "Parameter": "WTREGEN",
+            "Meaning": "Treasury General Account balance.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "When TGA rises, liquidity is often drained from markets.",
+        },
+        {
+            "Parameter": "RRPONTSYD",
+            "Meaning": "Reverse Repo balance.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Higher RRP can absorb liquidity from the financial system.",
+        },
+        {
+            "Parameter": "WALCL_B",
+            "Meaning": "Fed balance sheet in billions.",
+            "How Calculated": "WALCL / 1000",
+            "Interpretation": "Unit-converted version of WALCL.",
+        },
+        {
+            "Parameter": "WTREGEN_B",
+            "Meaning": "TGA in billions.",
+            "How Calculated": "WTREGEN / 1000",
+            "Interpretation": "Unit-converted version of TGA.",
+        },
+        {
+            "Parameter": "NET_LIQUIDITY_B",
+            "Meaning": "Net system liquidity proxy.",
+            "How Calculated": "WALCL_B - WTREGEN_B - RRPONTSYD",
+            "Interpretation": "Higher net liquidity is generally supportive for risk assets.",
+        },
+        {
+            "Parameter": "NET_LIQ_13W_CHG",
+            "Meaning": "13-week change in net liquidity.",
+            "How Calculated": "NET_LIQUIDITY_B - NET_LIQUIDITY_B.shift(13)",
+            "Interpretation": "Positive means liquidity improved over the last quarter.",
+        },
+        {
+            "Parameter": "NET_LIQ_26W_CHG",
+            "Meaning": "26-week change in net liquidity.",
+            "How Calculated": "NET_LIQUIDITY_B - NET_LIQUIDITY_B.shift(26)",
+            "Interpretation": "Medium-term liquidity trend.",
+        },
+        {
+            "Parameter": "EFFR",
+            "Meaning": "Effective Fed Funds Rate.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Policy-sensitive short-term funding rate.",
+        },
+        {
+            "Parameter": "SOFR",
+            "Meaning": "Secured Overnight Financing Rate.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Broad overnight funding benchmark.",
+        },
+        {
+            "Parameter": "DGS10",
+            "Meaning": "US 10-year Treasury yield.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Represents long-term rate expectations and growth/inflation outlook.",
+        },
+        {
+            "Parameter": "DGS2",
+            "Meaning": "US 2-year Treasury yield.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "More sensitive to near-term policy expectations.",
+        },
+        {
+            "Parameter": "T10Y2Y",
+            "Meaning": "Official 10Y minus 2Y spread from FRED.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Positive curve usually implies healthier macro expectations.",
+        },
+        {
+            "Parameter": "T10Y2Y_CALC",
+            "Meaning": "Fallback calculated yield curve.",
+            "How Calculated": "DGS10 - DGS2",
+            "Interpretation": "Used when official T10Y2Y is missing.",
+        },
+        {
+            "Parameter": "YC_USED",
+            "Meaning": "Yield curve actually used in the dashboard.",
+            "How Calculated": "T10Y2Y if available, else DGS10 - DGS2",
+            "Interpretation": "Positive = better macro backdrop, negative = inversion risk.",
+        },
+        {
+            "Parameter": "BAMLH0A0HYM2 / HY_SPREAD",
+            "Meaning": "US High Yield Option-Adjusted Spread.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Lower spread = benign credit conditions, higher spread = credit stress.",
+        },
+        {
+            "Parameter": "STLFSI4",
+            "Meaning": "St. Louis Fed Financial Stress Index.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Below 0 is relatively calm, above 1 suggests stress.",
+        },
+        {
+            "Parameter": "UNRATE",
+            "Meaning": "Unemployment rate.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Lower unemployment generally signals a stronger labor market.",
+        },
+        {
+            "Parameter": "INDPRO",
+            "Meaning": "Industrial Production Index.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Proxy for production activity in the economy.",
+        },
+        {
+            "Parameter": "INDPRO_YOY",
+            "Meaning": "Industrial production year-over-year growth.",
+            "How Calculated": "INDPRO.pct_change(52) * 100",
+            "Interpretation": "Positive = expansion, negative = weakening production trend.",
+        },
+        {
+            "Parameter": "CPIAUCSL",
+            "Meaning": "Consumer Price Index.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Broad measure of consumer inflation.",
+        },
+        {
+            "Parameter": "CPI_YOY",
+            "Meaning": "CPI year-over-year inflation.",
+            "How Calculated": "CPIAUCSL.pct_change(52) * 100",
+            "Interpretation": "Tracks inflation trend versus one year earlier.",
+        },
+        {
+            "Parameter": "PCEPI",
+            "Meaning": "PCE Price Index.",
+            "How Calculated": "Raw FRED series value",
+            "Interpretation": "Fed-preferred inflation measure.",
+        },
+        {
+            "Parameter": "PCE_YOY",
+            "Meaning": "PCE year-over-year inflation.",
+            "How Calculated": "PCEPI.pct_change(52) * 100",
+            "Interpretation": "Useful for assessing inflation pressure over time.",
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
+def build_signal_rule_table() -> pd.DataFrame:
+    rows = [
+        {
+            "Signal Component": "Net Liquidity 13W Change",
+            "Rule": "> 0",
+            "Score Impact": "+1.0",
+            "Meaning": "Liquidity improved over the last 13 weeks.",
+        },
+        {
+            "Signal Component": "Yield Curve (YC_USED)",
+            "Rule": "> 0",
+            "Score Impact": "+1.0",
+            "Meaning": "Positive yield curve is treated as healthier macro structure.",
+        },
+        {
+            "Signal Component": "HY Spread",
+            "Rule": "< 4.0",
+            "Score Impact": "+1.0",
+            "Meaning": "Credit market stress is low.",
+        },
+        {
+            "Signal Component": "HY Spread",
+            "Rule": "4.0 to 6.0",
+            "Score Impact": "+0.5",
+            "Meaning": "Credit conditions are neutral.",
+        },
+        {
+            "Signal Component": "Financial Stress",
+            "Rule": "< 0",
+            "Score Impact": "+1.0",
+            "Meaning": "Stress environment is calm.",
+        },
+        {
+            "Signal Component": "Financial Stress",
+            "Rule": "0 to 1.0",
+            "Score Impact": "+0.5",
+            "Meaning": "Moderate stress environment.",
+        },
+        {
+            "Signal Component": "Industrial Production YoY",
+            "Rule": "> 0",
+            "Score Impact": "+1.0",
+            "Meaning": "Economic production is expanding.",
+        },
+        {
+            "Signal Component": "Unemployment Rate",
+            "Rule": "< 4.5",
+            "Score Impact": "+1.0",
+            "Meaning": "Labor market is considered supportive.",
+        },
+        {
+            "Signal Component": "Total Score",
+            "Rule": ">= 5",
+            "Score Impact": "RISK ON",
+            "Meaning": "Supportive macro backdrop for risk assets.",
+        },
+        {
+            "Signal Component": "Total Score",
+            "Rule": ">= 3 and < 5",
+            "Score Impact": "NEUTRAL",
+            "Meaning": "Mixed environment.",
+        },
+        {
+            "Signal Component": "Total Score",
+            "Rule": "< 3",
+            "Score Impact": "RISK OFF",
+            "Meaning": "Defensive environment.",
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
+# =========================================================
+# 7) FIGURES
 # =========================================================
 def apply_dark_layout(fig: go.Figure, title: str) -> go.Figure:
     fig.update_layout(
@@ -496,9 +723,11 @@ def fig_liquidity(df: pd.DataFrame) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(
         go.Scatter(
-            x=df["date"], y=df["NET_LIQUIDITY_B"],
+            x=df["date"],
+            y=df["NET_LIQUIDITY_B"],
             name="Net Liquidity (B USD)",
-            mode="lines", line=dict(width=2)
+            mode="lines",
+            line=dict(width=2),
         ),
         secondary_y=False,
     )
@@ -506,9 +735,12 @@ def fig_liquidity(df: pd.DataFrame) -> go.Figure:
     if "WALCL_B" in df.columns:
         fig.add_trace(
             go.Scatter(
-                x=df["date"], y=df["WALCL_B"],
+                x=df["date"],
+                y=df["WALCL_B"],
                 name="Fed Balance Sheet (B)",
-                mode="lines", line=dict(width=1), opacity=0.6
+                mode="lines",
+                line=dict(width=1),
+                opacity=0.6,
             ),
             secondary_y=True,
         )
@@ -516,9 +748,12 @@ def fig_liquidity(df: pd.DataFrame) -> go.Figure:
     if "WTREGEN_B" in df.columns:
         fig.add_trace(
             go.Scatter(
-                x=df["date"], y=df["WTREGEN_B"],
+                x=df["date"],
+                y=df["WTREGEN_B"],
                 name="TGA (B)",
-                mode="lines", line=dict(width=1), opacity=0.6
+                mode="lines",
+                line=dict(width=1),
+                opacity=0.6,
             ),
             secondary_y=True,
         )
@@ -526,9 +761,12 @@ def fig_liquidity(df: pd.DataFrame) -> go.Figure:
     if "RRPONTSYD" in df.columns:
         fig.add_trace(
             go.Scatter(
-                x=df["date"], y=df["RRPONTSYD"],
+                x=df["date"],
+                y=df["RRPONTSYD"],
                 name="RRP (B)",
-                mode="lines", line=dict(width=1), opacity=0.6
+                mode="lines",
+                line=dict(width=1),
+                opacity=0.6,
             ),
             secondary_y=True,
         )
@@ -544,8 +782,11 @@ def fig_rates(df: pd.DataFrame) -> go.Figure:
         if col in df.columns:
             fig.add_trace(
                 go.Scatter(
-                    x=df["date"], y=df[col],
-                    name=name, mode="lines", line=dict(width=2)
+                    x=df["date"],
+                    y=df[col],
+                    name=name,
+                    mode="lines",
+                    line=dict(width=2),
                 ),
                 secondary_y=False,
             )
@@ -553,9 +794,11 @@ def fig_rates(df: pd.DataFrame) -> go.Figure:
     if "YC_USED" in df.columns:
         fig.add_trace(
             go.Scatter(
-                x=df["date"], y=df["YC_USED"],
+                x=df["date"],
+                y=df["YC_USED"],
                 name="10Y-2Y Spread (used)",
-                mode="lines", line=dict(width=2, dash="dot")
+                mode="lines",
+                line=dict(width=2, dash="dot"),
             ),
             secondary_y=True,
         )
@@ -573,8 +816,11 @@ def fig_credit(df: pd.DataFrame) -> go.Figure:
     if "BAMLH0A0HYM2" in df.columns and df["BAMLH0A0HYM2"].notna().any():
         fig.add_trace(
             go.Scatter(
-                x=df["date"], y=df["BAMLH0A0HYM2"],
-                name="HY OAS", mode="lines", line=dict(width=2)
+                x=df["date"],
+                y=df["BAMLH0A0HYM2"],
+                name="HY OAS",
+                mode="lines",
+                line=dict(width=2),
             ),
             secondary_y=False,
         )
@@ -585,9 +831,11 @@ def fig_credit(df: pd.DataFrame) -> go.Figure:
     if "STLFSI4" in df.columns and df["STLFSI4"].notna().any():
         fig.add_trace(
             go.Scatter(
-                x=df["date"], y=df["STLFSI4"],
+                x=df["date"],
+                y=df["STLFSI4"],
                 name="Financial Stress",
-                mode="lines", line=dict(width=2, dash="dot")
+                mode="lines",
+                line=dict(width=2, dash="dot"),
             ),
             secondary_y=True,
         )
@@ -597,6 +845,7 @@ def fig_credit(df: pd.DataFrame) -> go.Figure:
 
     if not has_any:
         fig.add_annotation(text="Credit data unavailable", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+
     fig.update_yaxes(title_text="HY OAS (%)", secondary_y=False)
     fig.update_yaxes(title_text="Stress Index", secondary_y=True)
     return apply_dark_layout(fig, "Credit: High Yield Spread / Financial Stress")
@@ -609,9 +858,11 @@ def fig_macro(df: pd.DataFrame) -> go.Figure:
     if "INDPRO_YOY" in df.columns and df["INDPRO_YOY"].notna().any():
         fig.add_trace(
             go.Scatter(
-                x=df["date"], y=df["INDPRO_YOY"],
+                x=df["date"],
+                y=df["INDPRO_YOY"],
                 name="Industrial Production YoY",
-                mode="lines", line=dict(width=2)
+                mode="lines",
+                line=dict(width=2),
             ),
             secondary_y=False,
         )
@@ -621,9 +872,11 @@ def fig_macro(df: pd.DataFrame) -> go.Figure:
     if "UNRATE" in df.columns and df["UNRATE"].notna().any():
         fig.add_trace(
             go.Scatter(
-                x=df["date"], y=df["UNRATE"],
+                x=df["date"],
+                y=df["UNRATE"],
                 name="Unemployment Rate",
-                mode="lines", line=dict(width=2, dash="dot")
+                mode="lines",
+                line=dict(width=2, dash="dot"),
             ),
             secondary_y=True,
         )
@@ -644,8 +897,11 @@ def fig_inflation(df: pd.DataFrame) -> go.Figure:
     if "CPI_YOY" in df.columns and df["CPI_YOY"].notna().any():
         fig.add_trace(
             go.Scatter(
-                x=df["date"], y=df["CPI_YOY"],
-                name="CPI YoY", mode="lines", line=dict(width=2)
+                x=df["date"],
+                y=df["CPI_YOY"],
+                name="CPI YoY",
+                mode="lines",
+                line=dict(width=2),
             )
         )
         has_any = True
@@ -653,8 +909,11 @@ def fig_inflation(df: pd.DataFrame) -> go.Figure:
     if "PCE_YOY" in df.columns and df["PCE_YOY"].notna().any():
         fig.add_trace(
             go.Scatter(
-                x=df["date"], y=df["PCE_YOY"],
-                name="PCE YoY", mode="lines", line=dict(width=2, dash="dot")
+                x=df["date"],
+                y=df["PCE_YOY"],
+                name="PCE YoY",
+                mode="lines",
+                line=dict(width=2, dash="dot"),
             )
         )
         has_any = True
@@ -703,12 +962,12 @@ def fig_score_gauge(score: float, regime: str, color: str) -> go.Figure:
 
 
 # =========================================================
-# 7) CACHE / LOAD
+# 8) CACHE / LOAD
 # =========================================================
-@st.cache_data(ttl=1800, show_spinner=True)
-def load_dashboard_data(lookback_years: int = DEFAULT_LOOKBACK_YEARS):
+@st.cache_data(ttl=CACHE_TTL_SEC, show_spinner=True)
+def load_dashboard_data(fetch_years: int = 20):
     api_key = load_api_key()
-    start_dt = datetime.today() - timedelta(days=int((lookback_years + 3) * 365.25))
+    start_dt = datetime.today() - timedelta(days=int((fetch_years + 3) * 365.25))
     start_date = start_dt.strftime("%Y-%m-%d")
 
     raw = fetch_all_series(api_key, start_date)
@@ -719,7 +978,23 @@ def load_dashboard_data(lookback_years: int = DEFAULT_LOOKBACK_YEARS):
 
 
 # =========================================================
-# 8) UI
+# 9) UI HELPERS
+# =========================================================
+def metric_card(col, title, value, sub="", color=None):
+    col.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-title">{title}</div>
+            <div class="metric-value" style="color:{color or THEME["text"]};">{value}</div>
+            <div class="metric-sub">{sub}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =========================================================
+# 10) UI
 # =========================================================
 st.title(APP_TITLE)
 
@@ -734,7 +1009,7 @@ if manual_refresh:
     st.cache_data.clear()
 
 try:
-    data_cache, last_refresh_ts = load_dashboard_data(DEFAULT_LOOKBACK_YEARS)
+    data_cache, last_refresh_ts = load_dashboard_data(20)
 except Exception as e:
     st.error(f"Initial data load failed: {e}")
     st.stop()
@@ -750,54 +1025,142 @@ stance_title, explanation, action = interpret_regime(score, regime)
 
 st.caption(f"Last refresh: {last_refresh_ts:%Y-%m-%d %H:%M:%S}")
 
-net_liq = latest.get("NET_LIQUIDITY_B", np.nan)
-yc = latest.get("YC_USED", np.nan)
-hy = latest.get("HY_SPREAD", np.nan)
-stress = latest.get("STLFSI4", np.nan)
+tabs = st.tabs(["Dashboard", "Methodology"])
 
-hy_stress_text = "N/A"
-if pd.notna(hy) and pd.notna(stress):
-    hy_stress_text = f"{hy:.2f}% / {stress:.2f}"
-elif pd.notna(hy):
-    hy_stress_text = f"{hy:.2f}% / N/A"
-elif pd.notna(stress):
-    hy_stress_text = f"N/A / {stress:.2f}"
+with tabs[0]:
+    net_liq = latest.get("NET_LIQUIDITY_B", np.nan)
+    yc = latest.get("YC_USED", np.nan)
+    hy = latest.get("HY_SPREAD", np.nan)
+    stress = latest.get("STLFSI4", np.nan)
 
-m1, m2, m3, m4, m5 = st.columns(5)
+    hy_stress_text = "N/A"
+    if pd.notna(hy) and pd.notna(stress):
+        hy_stress_text = f"{hy:.2f}% / {stress:.2f}"
+    elif pd.notna(hy):
+        hy_stress_text = f"{hy:.2f}% / N/A"
+    elif pd.notna(stress):
+        hy_stress_text = f"N/A / {stress:.2f}"
 
-def metric_card(col, title, value, sub="", color=None):
-    col.markdown(
-        f"""
-        <div class="metric-card">
-            <div class="metric-title">{title}</div>
-            <div class="metric-value" style="color:{color or THEME["text"]};">{value}</div>
-            <div class="metric-sub">{sub}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    m1, m2, m3, m4, m5 = st.columns(5)
+    metric_card(m1, "Market Regime", regime, f"Score {score:.1f}/6", regime_color)
+    metric_card(m2, "Investment Stance", stance_title.replace("Investment Stance: ", ""), action)
+    metric_card(m3, "Net Liquidity", f"{net_liq:,.0f} B" if pd.notna(net_liq) else "N/A", "WALCL - TGA - RRP")
+    metric_card(m4, "10Y-2Y Curve", f"{yc:.2f}" if pd.notna(yc) else "N/A", "Positive is better")
+    metric_card(m5, "HY Spread / Stress", hy_stress_text, "Credit risk check")
+
+    left, right = st.columns([1, 2])
+
+    with left:
+        st.plotly_chart(fig_score_gauge(score, regime, regime_color), use_container_width=True)
+        st.markdown(f"### {stance_title}")
+        st.write(explanation)
+        st.markdown(f"**{action}**")
+
+    with right:
+        st.markdown("### Investment Status Rules")
+        status_df = build_status_table(data_cache)
+        st.dataframe(status_df, use_container_width=True, hide_index=True)
+
+    st.plotly_chart(fig_liquidity(plot_df), use_container_width=True)
+    st.plotly_chart(fig_rates(plot_df), use_container_width=True)
+    st.plotly_chart(fig_credit(plot_df), use_container_width=True)
+    st.plotly_chart(fig_macro(plot_df), use_container_width=True)
+    st.plotly_chart(fig_inflation(plot_df), use_container_width=True)
+
+with tabs[1]:
+    st.subheader("How each parameter is calculated")
+    st.write("This tab explains the raw indicators, derived fields, and how they are used in the dashboard.")
+
+    param_df = build_parameter_definition_table()
+    st.dataframe(param_df, use_container_width=True, hide_index=True)
+
+    st.subheader("Signal scoring methodology")
+    rule_df = build_signal_rule_table()
+    st.dataframe(rule_df, use_container_width=True, hide_index=True)
+
+    st.subheader("Key formulas")
+    st.latex(r"WALCL\_B = \frac{WALCL}{1000}")
+    st.latex(r"WTREGEN\_B = \frac{WTREGEN}{1000}")
+    st.latex(r"NET\_LIQUIDITY\_B = WALCL\_B - WTREGEN\_B - RRPONTSYD")
+    st.latex(r"NET\_LIQ\_13W\_CHG = NET\_LIQUIDITY\_B(t) - NET\_LIQUIDITY\_B(t-13)")
+    st.latex(r"NET\_LIQ\_26W\_CHG = NET\_LIQUIDITY\_B(t) - NET\_LIQUIDITY\_B(t-26)")
+    st.latex(r"T10Y2Y\_CALC = DGS10 - DGS2")
+    st.latex(r"CPI\_YOY = \left(\frac{CPIAUCSL(t)}{CPIAUCSL(t-52)} - 1\right)\times100")
+    st.latex(r"PCE\_YOY = \left(\frac{PCEPI(t)}{PCEPI(t-52)} - 1\right)\times100")
+    st.latex(r"INDPRO\_YOY = \left(\frac{INDPRO(t)}{INDPRO(t-52)} - 1\right)\times100")
+
+    st.subheader("Interpretation notes")
+    st.markdown(
+        """
+**1. Liquidity**
+- `NET_LIQUIDITY_B` is a simplified market liquidity proxy.
+- Rising net liquidity is generally supportive for equities and other risk assets.
+
+**2. Yield Curve**
+- `YC_USED` represents the 10Y minus 2Y Treasury spread.
+- A positive curve is usually interpreted as healthier than an inverted curve.
+
+**3. Credit Conditions**
+- `HY_SPREAD` and `STLFSI4` are used to detect financial stress.
+- Wider spreads and higher stress levels usually imply risk-off conditions.
+
+**4. Growth / Macro**
+- `INDPRO_YOY` is a production-growth proxy.
+- `UNRATE` helps assess labor market resilience.
+
+**5. Inflation**
+- `CPI_YOY` and `PCE_YOY` track inflation pressure.
+- They are displayed for context, but currently do not directly contribute to the regime score.
+
+**6. Regime Score**
+- The score is a rule-based framework from 0 to 6.
+- It is not a forecast model, but a structured macro condition indicator.
+"""
     )
 
-metric_card(m1, "Market Regime", regime, f"Score {score:.1f}/6", regime_color)
-metric_card(m2, "Investment Stance", stance_title.replace("Investment Stance: ", ""), action)
-metric_card(m3, "Net Liquidity", f"{net_liq:,.0f} B" if pd.notna(net_liq) else "N/A", "WALCL - TGA - RRP")
-metric_card(m4, "10Y-2Y Curve", f"{yc:.2f}" if pd.notna(yc) else "N/A", "Positive is better")
-metric_card(m5, "HY Spread / Stress", hy_stress_text, "Credit risk check")
+    st.subheader("Detailed parameter guide")
+    with st.expander("Liquidity parameters", expanded=False):
+        st.markdown(
+            """
+- **WALCL**: Fed total assets. Often used as a rough proxy for central bank balance sheet expansion/contraction.
+- **WTREGEN**: Treasury cash parked at the Fed. Rising TGA can drain liquidity from markets.
+- **RRPONTSYD**: Reverse repo usage. High balances can reflect cash being absorbed out of the system.
+- **NET_LIQUIDITY_B**: Simplified market liquidity estimate from the three series above.
+"""
+        )
 
-left, right = st.columns([1, 2])
+    with st.expander("Rates parameters", expanded=False):
+        st.markdown(
+            """
+- **EFFR**: Effective Fed Funds Rate, the realized overnight policy rate.
+- **SOFR**: Secured Overnight Financing Rate, an important funding benchmark.
+- **DGS10 / DGS2**: 10Y and 2Y Treasury yields.
+- **YC_USED**: The yield curve measure used for scoring. Positive is treated as supportive.
+"""
+        )
 
-with left:
-    st.plotly_chart(fig_score_gauge(score, regime, regime_color), use_container_width=True)
-    st.markdown(f"### {stance_title}")
-    st.write(explanation)
-    st.markdown(f"**{action}**")
+    with st.expander("Credit parameters", expanded=False):
+        st.markdown(
+            """
+- **HY_SPREAD**: High yield spread over Treasuries. A wider spread usually means higher credit risk.
+- **STLFSI4**: Financial stress index. Higher readings suggest tighter financial conditions.
+"""
+        )
 
-with right:
-    st.markdown("### Investment Status Rules")
-    status_df = build_status_table(data_cache)
-    st.dataframe(status_df, use_container_width=True, hide_index=True)
+    with st.expander("Macro parameters", expanded=False):
+        st.markdown(
+            """
+- **UNRATE**: Unemployment rate. Lower values often imply a stronger labor market.
+- **INDPRO**: Industrial production level.
+- **INDPRO_YOY**: Growth rate of industrial production over the last year.
+"""
+        )
 
-st.plotly_chart(fig_liquidity(plot_df), use_container_width=True)
-st.plotly_chart(fig_rates(plot_df), use_container_width=True)
-st.plotly_chart(fig_credit(plot_df), use_container_width=True)
-st.plotly_chart(fig_macro(plot_df), use_container_width=True)
-st.plotly_chart(fig_inflation(plot_df), use_container_width=True)
+    with st.expander("Inflation parameters", expanded=False):
+        st.markdown(
+            """
+- **CPIAUCSL / CPI_YOY**: Consumer inflation level and yearly growth.
+- **PCEPI / PCE_YOY**: Personal consumption expenditures price index and yearly growth.
+- PCE is widely followed because it is closely watched by the Fed.
+"""
+        )
