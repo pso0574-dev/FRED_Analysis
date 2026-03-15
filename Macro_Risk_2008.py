@@ -1,900 +1,909 @@
 # streamlit_app.py
-# ============================================================
-# FRED Macro Risk Dashboard
-# - Financial crisis monitoring dashboard using FRED
-# - Focused on liquidity / rates / credit / macro / inflation
-# - Includes current snapshot, risk interpretation, and charts
+# ------------------------------------------------------------
+# Nasdaq-100 Quant Strategy Dashboard
+# ROE / MDD based undervalued stock screening
+# + strategy tabs
+# + Top 10 MVA analysis
+# + MVA charts listed sequentially
+# + simple company description + quant interpretation per stock
+# + Sector filter
+#
+# Install:
+#   pip install streamlit yfinance pandas numpy plotly
 #
 # Run:
 #   streamlit run streamlit_app.py
-#
-# Install:
-#   pip install streamlit pandas numpy plotly requests
-#
-# Optional:
-#   Set FRED_API_KEY in environment variables
-#   or create .streamlit/secrets.toml with:
-#   FRED_API_KEY="YOUR_API_KEY"
-# ============================================================
-
-from __future__ import annotations
-
-import os
-import time
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+# ------------------------------------------------------------
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-import requests
+import yfinance as yf
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
+
 
 # ============================================================
-# Page setup
+# Page config
 # ============================================================
 st.set_page_config(
-    page_title="FRED Macro Risk Dashboard",
-    page_icon="📊",
+    page_title="Nasdaq-100 Quant Strategy Dashboard",
+    page_icon="📈",
     layout="wide",
 )
 
-st.title("📊 FRED Macro Risk Dashboard")
-st.caption("Liquidity / Rates / Credit / Macro / Inflation / Crisis Risk Monitoring")
+st.title("📈 Nasdaq-100 Quant Strategy Dashboard")
+st.caption(
+    "ROE / MDD based undervalued stock screening with strategy tabs + sequential Top 10 MVA analysis"
+)
+
+
+# ============================================================
+# Nasdaq-100 universe
+# ============================================================
+NASDAQ100_TICKERS = [
+    "AAPL", "ABNB", "ADBE", "ADI", "ADP", "ADSK", "AEP", "AMAT", "AMD", "AMGN",
+    "AMZN", "ANSS", "APP", "ARM", "ASML", "AVGO", "AXON", "AZN", "BIIB", "BKNG",
+    "CDNS", "CEG", "CHTR", "CMCSA", "COST", "CPRT", "CRWD", "CSCO", "CSX", "CTAS",
+    "CTSH", "DASH", "DDOG", "DXCM", "EA", "EXC", "FANG", "FAST", "FTNT", "GEHC",
+    "GFS", "GILD", "GOOG", "GOOGL", "HON", "IDXX", "INTC", "INTU", "ISRG", "KDP",
+    "KHC", "KLAC", "LIN", "LRCX", "LULU", "MAR", "MCHP", "MDLZ", "MELI", "META",
+    "MNST", "MRVL", "MSFT", "MU", "NFLX", "NVDA", "ODFL", "ON", "ORLY", "PANW",
+    "PAYX", "PCAR", "PDD", "PEP", "PLTR", "PYPL", "QCOM", "REGN", "ROP", "ROST",
+    "SBUX", "SNPS", "TEAM", "TMUS", "TSLA", "TTD", "TTWO", "TXN", "VRSK", "VRTX",
+    "WBD", "WDAY", "XEL", "ZS"
+]
+
 
 # ============================================================
 # Sidebar
 # ============================================================
 st.sidebar.header("Settings")
 
-LOOKBACK_YEARS = st.sidebar.slider("Lookback years", 1, 20, 5)
-AUTO_REFRESH = st.sidebar.checkbox("Auto refresh every 30 min", value=False)
-SHOW_NORMALIZED = st.sidebar.checkbox("Show normalized comparison chart", value=True)
-SHOW_RAW_CHARTS = st.sidebar.checkbox("Show raw charts", value=True)
+period = st.sidebar.selectbox(
+    "Price lookback",
+    ["1y", "2y", "3y", "5y"],
+    index=1
+)
 
-if AUTO_REFRESH:
-    st.sidebar.info("Enable browser refresh or use Streamlit rerun logic if needed.")
+top_n = st.sidebar.slider(
+    "Top N",
+    min_value=5,
+    max_value=20,
+    value=10,
+    step=1
+)
+
+min_roe = st.sidebar.slider(
+    "Minimum ROE (%)",
+    min_value=0,
+    max_value=40,
+    value=10,
+    step=1
+)
+
+min_mktcap_b = st.sidebar.slider(
+    "Minimum Market Cap ($B)",
+    min_value=0,
+    max_value=500,
+    value=10,
+    step=5
+)
+
+refresh = st.sidebar.button("Refresh Data")
+
+if refresh:
+    st.cache_data.clear()
+
 
 # ============================================================
-# FRED API configuration
+# Data loading helpers
 # ============================================================
-FRED_API_KEY = None
-try:
-    if "FRED_API_KEY" in st.secrets:
-        FRED_API_KEY = st.secrets["FRED_API_KEY"]
-except Exception:
-    pass
-
-if not FRED_API_KEY:
-    FRED_API_KEY = os.getenv("FRED_API_KEY", "")
-
-BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
-REQUEST_TIMEOUT = 20
-MAX_RETRIES = 4
-BACKOFF_SEC = 1.2
-
-# ============================================================
-# Series definitions
-# ============================================================
-SERIES_META = {
-    "WALCL": {
-        "name": "Fed Balance Sheet",
-        "category": "Liquidity",
-        "unit": "Million USD",
-        "desc": "Federal Reserve total assets. Rapid expansion often signals stress support.",
-    },
-    "RRPONTSYD": {
-        "name": "Reverse Repo",
-        "category": "Liquidity",
-        "unit": "Billion USD",
-        "desc": "Overnight Reverse Repo usage. Reflects liquidity parking / drainage.",
-    },
-    "WTREGEN": {
-        "name": "Treasury General Account",
-        "category": "Liquidity",
-        "unit": "Million USD",
-        "desc": "US Treasury cash balance. Falling TGA can inject liquidity into the system.",
-    },
-    "DGS10": {
-        "name": "10Y Treasury Yield",
-        "category": "Rates",
-        "unit": "%",
-        "desc": "Long-term US Treasury yield.",
-    },
-    "DGS2": {
-        "name": "2Y Treasury Yield",
-        "category": "Rates",
-        "unit": "%",
-        "desc": "Short-term US Treasury yield, sensitive to policy expectations.",
-    },
-    "T10Y2Y": {
-        "name": "10Y-2Y Yield Curve",
-        "category": "Rates",
-        "unit": "%",
-        "desc": "Yield curve spread. Prolonged inversion often precedes recession.",
-    },
-    "BAMLH0A0HYM2": {
-        "name": "High Yield Spread",
-        "category": "Credit",
-        "unit": "%",
-        "desc": "High-yield corporate bond spread. Rising spread signals credit stress.",
-    },
-    "BAMLC0A0CM": {
-        "name": "Investment Grade Spread",
-        "category": "Credit",
-        "unit": "%",
-        "desc": "Investment-grade corporate bond spread.",
-    },
-    "STLFSI4": {
-        "name": "Financial Stress Index",
-        "category": "Stress",
-        "unit": "Index",
-        "desc": "Composite financial stress index. Higher values imply market stress.",
-    },
-    "INDPRO": {
-        "name": "Industrial Production",
-        "category": "Macro",
-        "unit": "Index",
-        "desc": "Industrial activity proxy.",
-    },
-    "UNRATE": {
-        "name": "Unemployment Rate",
-        "category": "Macro",
-        "unit": "%",
-        "desc": "US unemployment rate.",
-    },
-    "DFF": {
-        "name": "Effective Fed Funds Rate",
-        "category": "Policy",
-        "unit": "%",
-        "desc": "Effective federal funds rate.",
-    },
-    "SOFR": {
-        "name": "SOFR",
-        "category": "Policy",
-        "unit": "%",
-        "desc": "Secured Overnight Financing Rate.",
-    },
-    "CPIAUCSL": {
-        "name": "CPI",
-        "category": "Inflation",
-        "unit": "Index",
-        "desc": "Consumer Price Index.",
-    },
-    "DCOILWTICO": {
-        "name": "WTI Oil",
-        "category": "Inflation",
-        "unit": "USD/bbl",
-        "desc": "WTI crude oil spot price.",
-    },
-    "CPFF": {
-        "name": "Commercial Paper Funding Facility",
-        "category": "Stress",
-        "unit": "Index",
-        "desc": "Commercial paper funding stress-related series.",
-    },
-    "TEDRATE": {
-        "name": "TED Spread",
-        "category": "Stress",
-        "unit": "%",
-        "desc": "Bank funding stress proxy.",
-    },
-    "DRBLACBS": {
-        "name": "Bank Lending Tightening",
-        "category": "Credit",
-        "unit": "%",
-        "desc": "Net percentage of domestic banks tightening standards for C&I loans.",
-    },
-}
-
-DEFAULT_SERIES = [
-    "WALCL",
-    "RRPONTSYD",
-    "WTREGEN",
-    "DGS10",
-    "DGS2",
-    "T10Y2Y",
-    "BAMLH0A0HYM2",
-    "BAMLC0A0CM",
-    "STLFSI4",
-    "INDPRO",
-    "UNRATE",
-    "DFF",
-    "SOFR",
-    "CPIAUCSL",
-    "DCOILWTICO",
-    "CPFF",
-    "TEDRATE",
-    "DRBLACBS",
-]
-
-# ============================================================
-# Helper functions
-# ============================================================
-def safe_float(x) -> float:
-    try:
-        if x == "." or x is None or x == "":
-            return np.nan
-        return float(x)
-    except Exception:
-        return np.nan
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_price_data(tickers, period="2y"):
+    data = yf.download(
+        tickers=tickers,
+        period=period,
+        auto_adjust=True,
+        progress=False,
+        group_by="ticker",
+        threads=True,
+    )
+    return data
 
 
-def fred_request(params: Dict) -> Dict:
-    last_error = None
-    for i in range(MAX_RETRIES):
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_fundamentals(tickers):
+    rows = []
+
+    for ticker in tickers:
         try:
-            res = requests.get(BASE_URL, params=params, timeout=REQUEST_TIMEOUT)
-            res.raise_for_status()
-            return res.json()
-        except Exception as e:
-            last_error = e
-            time.sleep(BACKOFF_SEC * (i + 1))
-    raise RuntimeError(f"FRED request failed after retries: {last_error}")
+            tk = yf.Ticker(ticker)
+
+            short_name = ticker
+            sector = ""
+            industry = ""
+            business_summary = ""
+            roe = np.nan
+            market_cap = np.nan
+            trailing_pe = np.nan
+            forward_pe = np.nan
+            gross_margin = np.nan
+            operating_margin = np.nan
+            revenue_growth = np.nan
+            debt_to_equity = np.nan
+            free_cashflow = np.nan
+
+            try:
+                info = tk.info
+            except Exception:
+                info = {}
+
+            if isinstance(info, dict) and len(info) > 0:
+                short_name = info.get("shortName", ticker)
+                sector = info.get("sector", "")
+                industry = info.get("industry", "")
+                business_summary = info.get("longBusinessSummary", "")
+
+                roe = info.get("returnOnEquity", np.nan)
+                market_cap = info.get("marketCap", np.nan)
+                trailing_pe = info.get("trailingPE", np.nan)
+                forward_pe = info.get("forwardPE", np.nan)
+                gross_margin = info.get("grossMargins", np.nan)
+                operating_margin = info.get("operatingMargins", np.nan)
+                revenue_growth = info.get("revenueGrowth", np.nan)
+                debt_to_equity = info.get("debtToEquity", np.nan)
+                free_cashflow = info.get("freeCashflow", np.nan)
+
+            rows.append({
+                "Ticker": ticker,
+                "ShortName": short_name,
+                "Sector": sector,
+                "Industry": industry,
+                "BusinessSummary": business_summary,
+                "ROE": roe * 100 if pd.notna(roe) else np.nan,
+                "MarketCap_B": market_cap / 1e9 if pd.notna(market_cap) else np.nan,
+                "TrailingPE": trailing_pe,
+                "ForwardPE": forward_pe,
+                "GrossMargin": gross_margin * 100 if pd.notna(gross_margin) else np.nan,
+                "OperatingMargin": operating_margin * 100 if pd.notna(operating_margin) else np.nan,
+                "RevenueGrowth": revenue_growth * 100 if pd.notna(revenue_growth) else np.nan,
+                "DebtToEquity": debt_to_equity,
+                "FCF_B": free_cashflow / 1e9 if pd.notna(free_cashflow) else np.nan,
+            })
+
+        except Exception:
+            rows.append({
+                "Ticker": ticker,
+                "ShortName": ticker,
+                "Sector": "",
+                "Industry": "",
+                "BusinessSummary": "",
+                "ROE": np.nan,
+                "MarketCap_B": np.nan,
+                "TrailingPE": np.nan,
+                "ForwardPE": np.nan,
+                "GrossMargin": np.nan,
+                "OperatingMargin": np.nan,
+                "RevenueGrowth": np.nan,
+                "DebtToEquity": np.nan,
+                "FCF_B": np.nan,
+            })
+
+    return pd.DataFrame(rows)
 
 
-@st.cache_data(show_spinner=False, ttl=1800)
-def fetch_fred_series(series_id: str, start_date: str) -> pd.DataFrame:
-    params = {
-        "series_id": series_id,
-        "file_type": "json",
-        "observation_start": start_date,
-        "sort_order": "asc",
-    }
-    if FRED_API_KEY:
-        params["api_key"] = FRED_API_KEY
+def get_close_series(price_data, ticker):
+    try:
+        if isinstance(price_data.columns, pd.MultiIndex):
+            if ticker in price_data.columns.get_level_values(0):
+                s = price_data[ticker]["Close"].dropna()
+            else:
+                s = pd.Series(dtype=float)
+        else:
+            if "Close" in price_data.columns:
+                s = price_data["Close"].dropna()
+            else:
+                s = pd.Series(dtype=float)
 
-    data = fred_request(params)
-    obs = data.get("observations", [])
-    if not obs:
-        return pd.DataFrame(columns=["date", "value"]).set_index("date")
+        return s.astype(float)
 
-    df = pd.DataFrame(obs)[["date", "value"]].copy()
-    df["date"] = pd.to_datetime(df["date"])
-    df["value"] = df["value"].apply(safe_float)
-    df = df.set_index("date").sort_index()
+    except Exception:
+        return pd.Series(dtype=float)
+
+
+def compute_technical_features(price_data, tickers):
+    rows = []
+
+    for ticker in tickers:
+        s = get_close_series(price_data, ticker)
+
+        if len(s) < 60:
+            continue
+
+        try:
+            rolling_peak = s.cummax()
+            drawdown = (s / rolling_peak - 1.0) * 100
+            mdd = drawdown.min()
+
+            ret_3m = np.nan
+            ret_6m = np.nan
+
+            if len(s) > 63:
+                ret_3m = (s.iloc[-1] / s.iloc[-63] - 1.0) * 100
+
+            if len(s) > 126:
+                ret_6m = (s.iloc[-1] / s.iloc[-126] - 1.0) * 100
+
+            ma50 = s.rolling(50).mean().iloc[-1] if len(s) >= 50 else np.nan
+            ma100 = s.rolling(100).mean().iloc[-1] if len(s) >= 100 else np.nan
+            ma200 = s.rolling(200).mean().iloc[-1] if len(s) >= 200 else np.nan
+
+            dist_50ma = ((s.iloc[-1] / ma50) - 1.0) * 100 if pd.notna(ma50) and ma50 != 0 else np.nan
+            dist_100ma = ((s.iloc[-1] / ma100) - 1.0) * 100 if pd.notna(ma100) and ma100 != 0 else np.nan
+            dist_200ma = ((s.iloc[-1] / ma200) - 1.0) * 100 if pd.notna(ma200) and ma200 != 0 else np.nan
+
+            vol_1y = s.pct_change().dropna().std() * np.sqrt(252) * 100
+
+            rows.append({
+                "Ticker": ticker,
+                "Price": s.iloc[-1],
+                "MDD": mdd,
+                "Momentum_3M": ret_3m,
+                "Momentum_6M": ret_6m,
+                "MA50": ma50,
+                "MA100": ma100,
+                "MA200": ma200,
+                "Dist_50MA": dist_50ma,
+                "Dist_100MA": dist_100ma,
+                "Dist_200MA": dist_200ma,
+                "Volatility_1Y": vol_1y,
+            })
+
+        except Exception:
+            continue
+
+    return pd.DataFrame(rows)
+
+
+# ============================================================
+# Ranking / scoring helpers
+# ============================================================
+def rank_high(series):
+    return series.rank(pct=True, ascending=True)
+
+
+def rank_low(series):
+    return 1 - series.rank(pct=True, ascending=True)
+
+
+def build_scores(df):
+    df = df.copy()
+    df = df.replace([np.inf, -np.inf], np.nan)
+
+    df["r_ROE"] = rank_high(df["ROE"])
+    df["r_GrossMargin"] = rank_high(df["GrossMargin"])
+    df["r_OpMargin"] = rank_high(df["OperatingMargin"])
+    df["r_RevenueGrowth"] = rank_high(df["RevenueGrowth"])
+    df["r_Mom6"] = rank_high(df["Momentum_6M"])
+    df["r_FCF"] = rank_high(df["FCF_B"])
+
+    df["r_MDD"] = rank_low(df["MDD"])
+    df["r_Debt"] = rank_low(df["DebtToEquity"])
+    df["r_Vol"] = rank_low(df["Volatility_1Y"])
+    df["r_PE"] = rank_low(df["ForwardPE"].fillna(df["TrailingPE"]))
+
+    df["Score_ROE_MDD"] = (
+        0.60 * df["r_ROE"] +
+        0.40 * df["r_MDD"]
+    )
+
+    df["Score_Quality_Pullback"] = (
+        0.30 * df["r_ROE"] +
+        0.20 * df["r_GrossMargin"] +
+        0.15 * df["r_OpMargin"] +
+        0.20 * df["r_MDD"] +
+        0.15 * df["r_Debt"]
+    )
+
+    df["Score_Recovery_Momentum"] = (
+        0.30 * df["r_ROE"] +
+        0.30 * df["r_MDD"] +
+        0.25 * df["r_Mom6"] +
+        0.15 * df["r_RevenueGrowth"]
+    )
+
+    df["Score_LowVol_Pullback"] = (
+        0.30 * df["r_ROE"] +
+        0.30 * df["r_MDD"] +
+        0.25 * df["r_Vol"] +
+        0.15 * df["r_PE"]
+    )
+
     return df
 
 
-def latest_valid_value(series: pd.Series) -> Tuple[Optional[pd.Timestamp], float]:
-    s = series.dropna()
-    if s.empty:
-        return None, np.nan
-    return s.index[-1], float(s.iloc[-1])
+def top_table(df, score_col, top_n=10):
+    cols = [
+        "Ticker",
+        "ShortName",
+        "Sector",
+        "Industry",
+        "BusinessSummary",
+        "ROE",
+        "MDD",
+        "Momentum_3M",
+        "Momentum_6M",
+        "Price",
+        "MA50",
+        "MA100",
+        "MA200",
+        "Dist_50MA",
+        "Dist_100MA",
+        "Dist_200MA",
+        "Volatility_1Y",
+        "MarketCap_B",
+        "ForwardPE",
+        "TrailingPE",
+        "RevenueGrowth",
+        "GrossMargin",
+        "OperatingMargin",
+        "DebtToEquity",
+        "FCF_B",
+        score_col,
+    ]
+    cols = [c for c in cols if c in df.columns]
 
-
-def prev_valid_value(series: pd.Series, n: int = 1) -> float:
-    s = series.dropna()
-    if len(s) <= n:
-        return np.nan
-    return float(s.iloc[-1 - n])
-
-
-def yoy_change(series: pd.Series) -> float:
-    s = series.dropna()
-    if len(s) < 13:
-        return np.nan
-    current = s.iloc[-1]
-    past = s.iloc[-13]
-    if pd.isna(current) or pd.isna(past) or past == 0:
-        return np.nan
-    return (current / past - 1.0) * 100.0
-
-
-def pct_change_recent(series: pd.Series, periods: int = 20) -> float:
-    s = series.dropna()
-    if len(s) <= periods:
-        return np.nan
-    prev = s.iloc[-1 - periods]
-    curr = s.iloc[-1]
-    if pd.isna(prev) or prev == 0 or pd.isna(curr):
-        return np.nan
-    return (curr / prev - 1.0) * 100.0
-
-
-def diff_recent(series: pd.Series, periods: int = 20) -> float:
-    s = series.dropna()
-    if len(s) <= periods:
-        return np.nan
-    return float(s.iloc[-1] - s.iloc[-1 - periods])
-
-
-def normalize_series(series: pd.Series) -> pd.Series:
-    s = series.dropna()
-    if s.empty:
-        return series * np.nan
-    min_v = s.min()
-    max_v = s.max()
-    if max_v == min_v:
-        return series * 0.0
-    return (series - min_v) / (max_v - min_v)
-
-
-def annualized_inflation_from_cpi(cpi: pd.Series, months: int = 3) -> float:
-    s = cpi.dropna()
-    if len(s) <= months:
-        return np.nan
-    recent = s.iloc[-1]
-    past = s.iloc[-1 - months]
-    if recent <= 0 or past <= 0:
-        return np.nan
-    return ((recent / past) ** (12 / months) - 1) * 100.0
-
-
-def classify_signal(series_id: str, value: float) -> Tuple[str, str]:
-    """
-    Returns:
-        status in {"Low Risk", "Watch", "High Risk", "N/A"}
-        brief interpretation
-    """
-    if pd.isna(value):
-        return "N/A", "No recent data"
-
-    if series_id == "BAMLH0A0HYM2":
-        if value >= 6:
-            return "High Risk", "Credit stress elevated"
-        elif value >= 4:
-            return "Watch", "Credit conditions weakening"
-        else:
-            return "Low Risk", "Credit spread contained"
-
-    if series_id == "BAMLC0A0CM":
-        if value >= 2.5:
-            return "High Risk", "IG spread elevated"
-        elif value >= 1.7:
-            return "Watch", "IG spread rising"
-        else:
-            return "Low Risk", "IG spread stable"
-
-    if series_id == "T10Y2Y":
-        if value < -0.5:
-            return "High Risk", "Deep curve inversion / recession signal"
-        elif value < 0:
-            return "Watch", "Yield curve inverted"
-        else:
-            return "Low Risk", "Curve normal or steepening"
-
-    if series_id == "STLFSI4":
-        if value >= 1.0:
-            return "High Risk", "Financial stress elevated"
-        elif value >= 0:
-            return "Watch", "Stress above normal"
-        else:
-            return "Low Risk", "Stress below average"
-
-    if series_id == "UNRATE":
-        if value >= 5.0:
-            return "High Risk", "Labor market weakening"
-        elif value >= 4.3:
-            return "Watch", "Unemployment drifting higher"
-        else:
-            return "Low Risk", "Labor market relatively firm"
-
-    if series_id == "DCOILWTICO":
-        if value >= 100:
-            return "High Risk", "Oil shock risk"
-        elif value >= 80:
-            return "Watch", "Inflation pressure from oil"
-        else:
-            return "Low Risk", "Oil not yet shock-level"
-
-    if series_id == "TEDRATE":
-        if value >= 1.0:
-            return "High Risk", "Funding stress elevated"
-        elif value >= 0.5:
-            return "Watch", "Funding stress rising"
-        else:
-            return "Low Risk", "Funding stress contained"
-
-    if series_id == "DRBLACBS":
-        if value >= 30:
-            return "High Risk", "Banks tightening aggressively"
-        elif value >= 10:
-            return "Watch", "Lending standards tightening"
-        else:
-            return "Low Risk", "Credit standards not severely tight"
-
-    if series_id == "WALCL":
-        return "Watch", "Use together with stress indicators"
-    if series_id == "RRPONTSYD":
-        return "Watch", "Interpret with liquidity context"
-    if series_id == "WTREGEN":
-        return "Watch", "Interpret with Treasury cash trends"
-    if series_id == "DGS10":
-        return "Watch", "Long rate level depends on growth/inflation mix"
-    if series_id == "DGS2":
-        return "Watch", "Short rate reflects policy expectations"
-    if series_id == "DFF":
-        return "Watch", "Policy restrictive if high for long"
-    if series_id == "SOFR":
-        return "Watch", "Short funding rate should stay orderly"
-    if series_id == "INDPRO":
-        return "Watch", "Watch trend and YoY changes"
-    if series_id == "CPIAUCSL":
-        return "Watch", "Use YoY / 3M annualized trend"
-    if series_id == "CPFF":
-        return "Watch", "Interpret as short-term funding stress proxy"
-
-    return "Watch", "Check chart and trend"
-
-
-def risk_color(status: str) -> str:
-    if status == "High Risk":
-        return "#ff4b4b"
-    if status == "Watch":
-        return "#f0ad4e"
-    if status == "Low Risk":
-        return "#2ca02c"
-    return "#9e9e9e"
-
-
-def build_single_chart(df: pd.DataFrame, series_id: str) -> go.Figure:
-    meta = SERIES_META[series_id]
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=df.index,
-            y=df[series_id],
-            mode="lines",
-            name=meta["name"],
-        )
+    out = (
+        df.sort_values(score_col, ascending=False)[cols]
+        .head(top_n)
+        .copy()
+        .reset_index(drop=True)
     )
-    fig.update_layout(
-        title=f"{meta['name']} ({series_id})",
-        xaxis_title="Date",
-        yaxis_title=meta["unit"],
-        height=360,
-        margin=dict(l=30, r=20, t=50, b=30),
-    )
-    return fig
-
-
-def build_normalized_chart(df: pd.DataFrame, series_ids: List[str], title: str) -> go.Figure:
-    fig = go.Figure()
-    for sid in series_ids:
-        if sid not in df.columns:
-            continue
-        s = normalize_series(df[sid])
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=s,
-                mode="lines",
-                name=f"{SERIES_META[sid]['name']} ({sid})",
-            )
-        )
-    fig.update_layout(
-        title=title,
-        xaxis_title="Date",
-        yaxis_title="Normalized (0-1)",
-        height=420,
-        margin=dict(l=30, r=20, t=50, b=30),
-        legend=dict(orientation="h"),
-    )
-    return fig
-
-
-def compute_dashboard_table(data: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-
-    for sid in data.columns:
-        series = data[sid]
-        dt, latest = latest_valid_value(series)
-        prev = prev_valid_value(series, 1)
-        chg = latest - prev if pd.notna(latest) and pd.notna(prev) else np.nan
-        yoy = yoy_change(series)
-        status, note = classify_signal(sid, latest)
-
-        row = {
-            "Category": SERIES_META[sid]["category"],
-            "Series ID": sid,
-            "Indicator": SERIES_META[sid]["name"],
-            "Latest Date": dt.date().isoformat() if dt is not None else "",
-            "Latest": latest,
-            "1-step Change": chg,
-            "YoY %": yoy,
-            "Status": status,
-            "Interpretation": note,
-            "Description": SERIES_META[sid]["desc"],
-        }
-
-        # Specialized calculations
-        if sid == "CPIAUCSL":
-            row["3M Annualized %"] = annualized_inflation_from_cpi(series, 3)
-        else:
-            row["3M Annualized %"] = np.nan
-
-        if sid in ["WALCL", "RRPONTSYD", "WTREGEN", "INDPRO", "DCOILWTICO"]:
-            row["20-period % Change"] = pct_change_recent(series, 20)
-        else:
-            row["20-period % Change"] = np.nan
-
-        if sid in ["BAMLH0A0HYM2", "BAMLC0A0CM", "STLFSI4", "TEDRATE", "T10Y2Y", "UNRATE"]:
-            row["20-period Diff"] = diff_recent(series, 20)
-        else:
-            row["20-period Diff"] = np.nan
-
-        rows.append(row)
-
-    out = pd.DataFrame(rows)
-    cat_order = ["Liquidity", "Rates", "Credit", "Stress", "Macro", "Policy", "Inflation"]
-    out["CategoryOrder"] = out["Category"].map({c: i for i, c in enumerate(cat_order)})
-    out = out.sort_values(["CategoryOrder", "Indicator"]).drop(columns=["CategoryOrder"])
     return out
 
 
-def style_status_cell(val: str) -> str:
-    color = risk_color(val)
-    return f"background-color: {color}; color: white; font-weight: 600;"
+# ============================================================
+# Formatting helpers
+# ============================================================
+def styled_table(df):
+    format_dict = {}
 
-
-def infer_overall_risk(table: pd.DataFrame) -> Tuple[str, str]:
-    score = 0
-
-    # Strong signals
-    for sid, weight in [
-        ("BAMLH0A0HYM2", 3),
-        ("T10Y2Y", 2),
-        ("STLFSI4", 3),
-        ("TEDRATE", 2),
-        ("DRBLACBS", 2),
-        ("UNRATE", 2),
-        ("DCOILWTICO", 1),
-    ]:
-        row = table[table["Series ID"] == sid]
-        if row.empty:
+    for col in df.columns:
+        if col in ["Ticker", "ShortName", "Sector", "Industry", "BusinessSummary"]:
             continue
-        status = row["Status"].iloc[0]
-        if status == "High Risk":
-            score += 2 * weight
-        elif status == "Watch":
-            score += 1 * weight
+        elif col in ["MarketCap_B", "FCF_B", "Price", "MA50", "MA100", "MA200"]:
+            format_dict[col] = "{:.2f}"
+        elif "Score_" in col:
+            format_dict[col] = "{:.3f}"
+        else:
+            format_dict[col] = "{:.2f}"
 
-    if score >= 18:
-        return "High Risk", "Broad multi-asset stress is building."
-    elif score >= 9:
-        return "Watch", "Several warning signals are active."
-    else:
-        return "Low Risk", "Risk signals are mixed or contained."
+    return df.style.format(format_dict)
+
+
+def safe_text(val, default="-"):
+    if val is None:
+        return default
+    if isinstance(val, float) and pd.isna(val):
+        return default
+    text = str(val).strip()
+    return text if text else default
+
+
+def summarize_business(text, max_len=220):
+    if not isinstance(text, str) or not text.strip():
+        return "Business description not available."
+    text = text.strip().replace("\n", " ")
+    if len(text) <= max_len:
+        return text
+    return text[:max_len].rsplit(" ", 1)[0] + "..."
 
 
 # ============================================================
-# Data loading
+# Interpretation helpers
 # ============================================================
-start_date = (datetime.today() - timedelta(days=365 * LOOKBACK_YEARS)).strftime("%Y-%m-%d")
+def interpret_mva(dist50, dist100, dist200):
+    if pd.notna(dist50) and pd.notna(dist100) and pd.notna(dist200):
+        if dist50 > 0 and dist100 > 0 and dist200 > 0:
+            return "Price is above MA50, MA100, and MA200, which suggests a relatively strong trend."
+        if dist50 > 0 and dist100 > 0 and dist200 < 0:
+            return "Short- and mid-term recovery is visible, but the stock is still below its long-term trend."
+        if dist50 > 0 and dist200 < 0:
+            return "Short-term recovery is visible, but the stock remains below MA200."
+        if dist50 < 0 and dist100 < 0 and dist200 < 0:
+            return "Price is below all major moving averages, which suggests a weak technical trend."
+        if dist200 < 0:
+            return "The stock remains below MA200, so it may still be in a discounted long-term zone."
+    return "Technical positioning is mixed across moving averages."
 
-with st.spinner("Loading FRED data..."):
-    data_dict = {}
-    failed_series = []
 
-    for sid in DEFAULT_SERIES:
-        try:
-            df_sid = fetch_fred_series(sid, start_date)
-            if not df_sid.empty:
-                data_dict[sid] = df_sid["value"].rename(sid)
+def interpret_quant_style(row, score_col):
+    roe = row.get("ROE", np.nan)
+    mdd = row.get("MDD", np.nan)
+    mom6 = row.get("Momentum_6M", np.nan)
+    vol = row.get("Volatility_1Y", np.nan)
+    rev = row.get("RevenueGrowth", np.nan)
+    debt = row.get("DebtToEquity", np.nan)
+
+    comments = []
+
+    if pd.notna(roe):
+        if roe >= 20:
+            comments.append("high profitability")
+        elif roe >= 10:
+            comments.append("decent profitability")
+        else:
+            comments.append("weaker profitability")
+
+    if pd.notna(mdd):
+        if mdd <= -30:
+            comments.append("deep drawdown")
+        elif mdd <= -15:
+            comments.append("meaningful pullback")
+        else:
+            comments.append("limited drawdown")
+
+    if score_col == "Score_Recovery_Momentum":
+        if pd.notna(mom6):
+            if mom6 > 10:
+                comments.append("clear recovery momentum")
+            elif mom6 > 0:
+                comments.append("mild recovery momentum")
             else:
-                failed_series.append(sid)
-        except Exception:
-            failed_series.append(sid)
+                comments.append("weak recent momentum")
 
-    if not data_dict:
-        st.error("No FRED data could be loaded. Check API key, internet connection, or series availability.")
-        st.stop()
+        if pd.notna(rev):
+            if rev > 10:
+                comments.append("solid revenue growth")
+            elif rev < 0:
+                comments.append("negative revenue growth")
 
-    data = pd.concat(data_dict.values(), axis=1).sort_index()
+    if score_col == "Score_LowVol_Pullback":
+        if pd.notna(vol):
+            if vol < 25:
+                comments.append("relatively stable volatility")
+            else:
+                comments.append("still volatile")
 
-    # Fallback: derive T10Y2Y if unavailable
-    if "T10Y2Y" not in data.columns and {"DGS10", "DGS2"}.issubset(data.columns):
-        data["T10Y2Y"] = data["DGS10"] - data["DGS2"]
+    if score_col == "Score_Quality_Pullback":
+        if pd.notna(debt):
+            if debt < 50:
+                comments.append("manageable leverage")
+            elif debt > 150:
+                comments.append("higher leverage")
 
-# ============================================================
-# Top summary
-# ============================================================
-table = compute_dashboard_table(data)
-overall_status, overall_msg = infer_overall_risk(table)
+    if not comments:
+        return "Quant interpretation is limited due to missing data."
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Overall Risk", overall_status)
-c2.metric("Loaded Series", int(data.shape[1]))
-c3.metric("Lookback", f"{LOOKBACK_YEARS}Y")
-c4.metric("Last Data Date", data.dropna(how="all").index.max().date().isoformat())
+    return " / ".join(comments).capitalize() + "."
 
-st.info(overall_msg)
 
-if failed_series:
-    st.warning("Some series could not be loaded: " + ", ".join(failed_series))
-
-# ============================================================
-# Key signal cards
-# ============================================================
-st.subheader("Key Crisis Signals")
-
-key_signals = [
-    "BAMLH0A0HYM2",
-    "T10Y2Y",
-    "STLFSI4",
-    "TEDRATE",
-    "DRBLACBS",
-    "UNRATE",
-    "DCOILWTICO",
-]
-
-cols = st.columns(len(key_signals))
-for col, sid in zip(cols, key_signals):
-    row = table[table["Series ID"] == sid]
-    if row.empty:
-        col.write(f"**{sid}**")
-        col.write("N/A")
-        continue
-
-    latest = row["Latest"].iloc[0]
-    status = row["Status"].iloc[0]
-    interp = row["Interpretation"].iloc[0]
-    name = row["Indicator"].iloc[0]
-    unit = SERIES_META[sid]["unit"]
-
-    col.markdown(
-        f"""
-        <div style="padding:12px; border-radius:14px; background:{risk_color(status)}20; border:1px solid {risk_color(status)};">
-            <div style="font-size:14px; font-weight:700;">{name}</div>
-            <div style="font-size:22px; font-weight:800; margin-top:6px;">{latest:.2f} {unit}</div>
-            <div style="font-size:13px; font-weight:700; color:{risk_color(status)}; margin-top:4px;">{status}</div>
-            <div style="font-size:12px; margin-top:6px;">{interp}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+def show_stock_description(row, score_col):
+    ticker = safe_text(row.get("Ticker"))
+    short_name = safe_text(row.get("ShortName"), ticker)
+    sector = safe_text(row.get("Sector"))
+    industry = safe_text(row.get("Industry"))
+    summary = summarize_business(row.get("BusinessSummary", ""))
+    quant_comment = interpret_quant_style(row, score_col)
+    mva_comment = interpret_mva(
+        row.get("Dist_50MA", np.nan),
+        row.get("Dist_100MA", np.nan),
+        row.get("Dist_200MA", np.nan),
     )
+
+    st.markdown(f"**{ticker} — {short_name}**")
+    st.caption(f"Sector: {sector} | Industry: {industry}")
+    st.write(summary)
+    st.info(f"Quant view: {quant_comment} {mva_comment}")
+
+
+# ============================================================
+# Chart helpers
+# ============================================================
+def plot_mva_chart(price_data, ticker, chart_key):
+    s = get_close_series(price_data, ticker)
+
+    if len(s) < 30:
+        st.warning(f"No sufficient price history for {ticker}")
+        return
+
+    dfp = pd.DataFrame({"Close": s})
+    dfp["MA50"] = dfp["Close"].rolling(50).mean()
+    dfp["MA100"] = dfp["Close"].rolling(100).mean()
+    dfp["MA200"] = dfp["Close"].rolling(200).mean()
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=dfp.index,
+        y=dfp["Close"],
+        mode="lines",
+        name=f"{ticker} Price"
+    ))
+    fig.add_trace(go.Scatter(
+        x=dfp.index,
+        y=dfp["MA50"],
+        mode="lines",
+        name="MA50"
+    ))
+    fig.add_trace(go.Scatter(
+        x=dfp.index,
+        y=dfp["MA100"],
+        mode="lines",
+        name="MA100"
+    ))
+    fig.add_trace(go.Scatter(
+        x=dfp.index,
+        y=dfp["MA200"],
+        mode="lines",
+        name="MA200"
+    ))
+
+    fig.update_layout(
+        title=f"{ticker} Price vs Moving Averages",
+        xaxis_title="Date",
+        yaxis_title="Price",
+        height=420,
+        legend_orientation="h",
+        margin=dict(l=20, r=20, t=60, b=20),
+    )
+
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+
+def plot_top10_mva_distance_bar(top_df, title, chart_key):
+    needed_cols = ["Ticker", "Dist_50MA", "Dist_100MA", "Dist_200MA"]
+    available_cols = [c for c in needed_cols if c in top_df.columns]
+
+    if len(available_cols) < 4:
+        st.warning("Not enough MVA data to display the bar chart.")
+        return
+
+    temp = top_df[needed_cols].copy()
+
+    temp = temp.melt(
+        id_vars="Ticker",
+        var_name="Metric",
+        value_name="Value"
+    )
+
+    fig = px.bar(
+        temp,
+        x="Ticker",
+        y="Value",
+        color="Metric",
+        barmode="group",
+        title=title
+    )
+
+    fig.update_layout(
+        height=420,
+        margin=dict(l=20, r=20, t=60, b=20),
+    )
+
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+
+def plot_score_bar(out, score_col, strategy_title, chart_key):
+    fig = px.bar(
+        out.sort_values(score_col, ascending=False),
+        x="Ticker",
+        y=score_col,
+        title=f"Top {len(out)} - {strategy_title} Score Ranking"
+    )
+
+    fig.update_layout(
+        height=400,
+        margin=dict(l=20, r=20, t=60, b=20),
+    )
+
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+
+def plot_roe_mdd_scatter(out, score_col, strategy_title, chart_key):
+    fig = px.scatter(
+        out,
+        x="MDD",
+        y="ROE",
+        size="MarketCap_B" if "MarketCap_B" in out.columns else None,
+        color=score_col,
+        hover_name="Ticker",
+        title=f"Top {len(out)} - {strategy_title}: ROE vs MDD"
+    )
+
+    fig.update_layout(
+        height=430,
+        margin=dict(l=20, r=20, t=60, b=20),
+    )
+
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+
+def plot_overview_scatter(df, chart_key):
+    fig = px.scatter(
+        df,
+        x="MDD",
+        y="ROE",
+        size="MarketCap_B" if "MarketCap_B" in df.columns else None,
+        color="Score_ROE_MDD",
+        hover_name="Ticker",
+        title="Nasdaq-100: ROE vs MDD"
+    )
+
+    fig.update_layout(
+        height=480,
+        margin=dict(l=20, r=20, t=60, b=20),
+    )
+
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+
+def show_mva_metrics(row):
+    c1, c2, c3 = st.columns(3)
+
+    d50 = row.get("Dist_50MA", np.nan)
+    d100 = row.get("Dist_100MA", np.nan)
+    d200 = row.get("Dist_200MA", np.nan)
+
+    c1.metric("Dist from MA50", "-" if pd.isna(d50) else f"{d50:.2f}%")
+    c2.metric("Dist from MA100", "-" if pd.isna(d100) else f"{d100:.2f}%")
+    c3.metric("Dist from MA200", "-" if pd.isna(d200) else f"{d200:.2f}%")
+
+
+def show_all_mva_charts(price_data, out, score_col, section_prefix):
+    st.markdown(f"#### Top {len(out)} Individual MVA Charts")
+
+    for idx, ticker in enumerate(out["Ticker"].tolist(), start=1):
+        row = out[out["Ticker"] == ticker].iloc[0]
+
+        st.markdown(f"##### {idx}. {ticker}")
+        show_stock_description(row, score_col)
+        show_mva_metrics(row)
+
+        plot_mva_chart(
+            price_data=price_data,
+            ticker=ticker,
+            chart_key=f"{section_prefix}_{score_col}_{ticker}_mva_chart"
+        )
+
+        if idx < len(out):
+            st.markdown("---")
+
+
+# ============================================================
+# Strategy section renderer
+# ============================================================
+def show_strategy_section(df, price_data, score_col, strategy_title, strategy_desc, top_n):
+    st.markdown(f"### {strategy_title}")
+    st.markdown(strategy_desc)
+
+    out = top_table(df, score_col, top_n)
+
+    if out.empty:
+        st.warning("No stocks matched the current filters.")
+        return
+
+    st.dataframe(styled_table(out), use_container_width=True)
+
+    plot_score_bar(
+        out=out,
+        score_col=score_col,
+        strategy_title=strategy_title,
+        chart_key=f"{score_col}_score_bar"
+    )
+
+    plot_roe_mdd_scatter(
+        out=out,
+        score_col=score_col,
+        strategy_title=strategy_title,
+        chart_key=f"{score_col}_roe_mdd_scatter"
+    )
+
+    st.markdown(f"#### Top {len(out)} MVA Distance Analysis")
+    plot_top10_mva_distance_bar(
+        top_df=out,
+        title=f"{strategy_title}: Price Distance from MA50 / MA100 / MA200",
+        chart_key=f"{score_col}_mva_distance_bar"
+    )
+
+    show_all_mva_charts(
+        price_data=price_data,
+        out=out,
+        score_col=score_col,
+        section_prefix="strategy"
+    )
+
+
+# ============================================================
+# Load data
+# ============================================================
+with st.spinner("Loading Nasdaq-100 market data..."):
+    price_data = load_price_data(NASDAQ100_TICKERS, period=period)
+    fundamentals_df = load_fundamentals(NASDAQ100_TICKERS)
+    technical_df = compute_technical_features(price_data, NASDAQ100_TICKERS)
+
+# ============================================================
+# Sector selector (after fundamentals loaded)
+# ============================================================
+sector_list = sorted(
+    [s for s in fundamentals_df["Sector"].dropna().unique().tolist() if str(s).strip()]
+)
+
+selected_sectors = st.sidebar.multiselect(
+    "Business Sector",
+    options=sector_list,
+    default=[],
+    help="Leave empty to analyze all sectors."
+)
+
+df = fundamentals_df.merge(technical_df, on="Ticker", how="inner")
+
+df = df[
+    (df["MarketCap_B"].fillna(0) >= min_mktcap_b) &
+    (df["ROE"].fillna(-999) >= min_roe)
+].copy()
+
+if selected_sectors:
+    df = df[df["Sector"].isin(selected_sectors)].copy()
+
+df = build_scores(df)
+
+st.subheader("Filtered Universe")
+if selected_sectors:
+    st.write(
+        f"Number of stocks after filters: **{len(df)}**  |  Selected sector(s): **{', '.join(selected_sectors)}**"
+    )
+else:
+    st.write(f"Number of stocks after filters: **{len(df)}**  |  Selected sector(s): **All**")
+
+if df.empty:
+    st.error("No stocks matched the current filter settings. Try lowering the ROE / market cap threshold or changing the sector filter.")
+    st.stop()
+
 
 # ============================================================
 # Tabs
 # ============================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["Snapshot Table", "Risk Dashboard", "Normalized View", "Raw Charts", "Indicator Guide"]
-)
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Overview",
+    "ROE + MDD",
+    "Quality + Pullback",
+    "Recovery Momentum",
+    "Low Vol Pullback",
+])
 
-# ============================================================
-# Tab 1: Snapshot Table
-# ============================================================
+
 with tab1:
-    st.subheader("Current Snapshot Table")
+    st.markdown("""
+### Overview
+This dashboard uses the **Nasdaq-100 universe** and compares several quant styles for finding
+**undervalued but fundamentally strong stocks**.
 
-    display_cols = [
-        "Category",
-        "Series ID",
-        "Indicator",
-        "Latest Date",
-        "Latest",
-        "1-step Change",
-        "YoY %",
-        "3M Annualized %",
-        "20-period % Change",
-        "20-period Diff",
-        "Status",
-        "Interpretation",
-    ]
+**Core interpretation**
+- **ROE**: profitability / business quality
+- **MDD**: how far the stock is below its previous peak
+- **Momentum**: whether recovery has started
+- **MVA**: where the current price sits relative to MA50 / MA100 / MA200
+""")
 
-    styled = (
-        table[display_cols]
-        .style.format(
-            {
-                "Latest": "{:,.2f}",
-                "1-step Change": "{:,.2f}",
-                "YoY %": "{:,.2f}",
-                "3M Annualized %": "{:,.2f}",
-                "20-period % Change": "{:,.2f}",
-                "20-period Diff": "{:,.2f}",
-            },
-            na_rep="",
-        )
-        .map(style_status_cell, subset=["Status"])
+    best = top_table(df, "Score_ROE_MDD", top_n)
+
+    st.markdown("#### Top Picks by ROE + MDD")
+    st.dataframe(styled_table(best), use_container_width=True)
+
+    plot_overview_scatter(
+        df=df,
+        chart_key="overview_roe_mdd_scatter"
     )
 
-    st.dataframe(styled, use_container_width=True)
-
-    st.download_button(
-        label="Download snapshot CSV",
-        data=table.to_csv(index=False).encode("utf-8"),
-        file_name="fred_macro_snapshot.csv",
-        mime="text/csv",
+    st.markdown("#### Overview MVA Distance of Top Picks")
+    plot_top10_mva_distance_bar(
+        top_df=best,
+        title="Overview Top Picks: Price Distance from MA50 / MA100 / MA200",
+        chart_key="overview_mva_distance_bar"
     )
 
-# ============================================================
-# Tab 2: Risk Dashboard
-# ============================================================
+    show_all_mva_charts(
+        price_data=price_data,
+        out=best,
+        score_col="Score_ROE_MDD",
+        section_prefix="overview"
+    )
+
+
 with tab2:
-    st.subheader("Risk Dashboard by Category")
+    show_strategy_section(
+        df=df,
+        price_data=price_data,
+        score_col="Score_ROE_MDD",
+        strategy_title="Strategy 1: ROE + MDD",
+        strategy_desc="""
+**Goal:** Find high-quality companies that are currently in a meaningful drawdown.
 
-    for category in ["Liquidity", "Rates", "Credit", "Stress", "Macro", "Policy", "Inflation"]:
-        sub = table[table["Category"] == category].copy()
-        if sub.empty:
-            continue
+**Interpretation**
+- High **ROE** = strong business quality
+- Deep **MDD** = potentially discounted price
+- **MVA** helps check whether the stock is still below medium- and long-term averages
 
-        st.markdown(f"### {category}")
-        show = sub[
-            ["Indicator", "Series ID", "Latest", "Status", "Interpretation", "Description"]
-        ].copy()
+This is the most direct **quality on sale** strategy.
+""",
+        top_n=top_n
+    )
 
-        st.dataframe(
-            show.style.format({"Latest": "{:,.2f}"}).map(style_status_cell, subset=["Status"]),
-            use_container_width=True,
-        )
 
-# ============================================================
-# Tab 3: Normalized View
-# ============================================================
 with tab3:
-    st.subheader("Normalized Multi-Series Comparison")
+    show_strategy_section(
+        df=df,
+        price_data=price_data,
+        score_col="Score_Quality_Pullback",
+        strategy_title="Strategy 2: Quality + Pullback",
+        strategy_desc="""
+**Goal:** Prefer strong businesses with healthy margins, better balance-sheet quality,
+and a meaningful pullback from prior highs.
 
-    if SHOW_NORMALIZED:
-        norm_groups = {
-            "Liquidity Comparison": ["WALCL", "RRPONTSYD", "WTREGEN"],
-            "Rates Comparison": ["DGS10", "DGS2", "T10Y2Y", "DFF", "SOFR"],
-            "Credit and Stress Comparison": ["BAMLH0A0HYM2", "BAMLC0A0CM", "STLFSI4", "TEDRATE", "DRBLACBS"],
-            "Macro and Inflation Comparison": ["INDPRO", "UNRATE", "CPIAUCSL", "DCOILWTICO"],
-        }
+**Factors**
+- ROE
+- Gross Margin
+- Operating Margin
+- Debt to Equity
+- MDD
 
-        for title, sids in norm_groups.items():
-            existing = [sid for sid in sids if sid in data.columns]
-            if not existing:
-                continue
-            fig = build_normalized_chart(data, existing, title)
-            st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Enable normalized comparison in the sidebar.")
+This is a more **fundamental quality-focused pullback** strategy.
+""",
+        top_n=top_n
+    )
 
-# ============================================================
-# Tab 4: Raw Charts
-# ============================================================
+
 with tab4:
-    st.subheader("Raw Charts")
+    show_strategy_section(
+        df=df,
+        price_data=price_data,
+        score_col="Score_Recovery_Momentum",
+        strategy_title="Strategy 3: Recovery Momentum",
+        strategy_desc="""
+**Goal:** Find stocks that were hit hard but are starting to recover.
 
-    if SHOW_RAW_CHARTS:
-        grouped = {}
-        for sid in data.columns:
-            cat = SERIES_META[sid]["category"]
-            grouped.setdefault(cat, []).append(sid)
+**Factors**
+- ROE
+- MDD
+- 6M Momentum
+- Revenue Growth
 
-        selected_category = st.selectbox("Select category", list(grouped.keys()))
-        selected_series = st.multiselect(
-            "Select indicators",
-            grouped[selected_category],
-            default=grouped[selected_category][: min(3, len(grouped[selected_category]))],
-            format_func=lambda x: f"{SERIES_META[x]['name']} ({x})",
-        )
+This helps avoid stocks that are cheap for structurally weak reasons.
+""",
+        top_n=top_n
+    )
 
-        if selected_series:
-            for sid in selected_series:
-                fig = build_single_chart(data, sid)
-                st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Choose at least one indicator.")
-    else:
-        st.info("Enable raw charts in the sidebar.")
 
-# ============================================================
-# Tab 5: Indicator Guide
-# ============================================================
 with tab5:
-    st.subheader("Indicator Guide")
-    guide_rows = []
+    show_strategy_section(
+        df=df,
+        price_data=price_data,
+        score_col="Score_LowVol_Pullback",
+        strategy_title="Strategy 4: Low Vol Pullback",
+        strategy_desc="""
+**Goal:** Find quality stocks in drawdown, but with relatively lower volatility.
 
-    for sid, meta in SERIES_META.items():
-        guide_rows.append(
-            {
-                "Category": meta["category"],
-                "Series ID": sid,
-                "Indicator": meta["name"],
-                "Description": meta["desc"],
-                "What to Check": {
-                    "WALCL": "Rapid balance sheet expansion can signal emergency liquidity support.",
-                    "RRPONTSYD": "Watch for large shifts showing liquidity absorption/release changes.",
-                    "WTREGEN": "Falling TGA can add liquidity; rising TGA can drain liquidity.",
-                    "DGS10": "Sharp declines may reflect recession fears; sharp rises may reflect inflation.",
-                    "DGS2": "Sensitive to Fed expectations and policy pivot pricing.",
-                    "T10Y2Y": "Negative values suggest inversion; deep/prolonged inversion is a warning.",
-                    "BAMLH0A0HYM2": "Move above 4% watch; above 6% high risk.",
-                    "BAMLC0A0CM": "Persistent widening suggests deteriorating corporate credit conditions.",
-                    "STLFSI4": "Above 0 watch; above 1 elevated market stress.",
-                    "INDPRO": "Look for rolling weakness and negative YoY trend.",
-                    "UNRATE": "Rising unemployment often confirms recessionary pressure.",
-                    "DFF": "High policy rate for longer increases refinancing pressure.",
-                    "SOFR": "Unexpected jumps may reflect short-term funding pressure.",
-                    "CPIAUCSL": "Check YoY and 3M annualized trend for inflation persistence.",
-                    "DCOILWTICO": "Oil spikes can reignite inflation and pressure growth.",
-                    "CPFF": "Useful as a funding market stress context series.",
-                    "TEDRATE": "Funding stress tends to show up when bank confidence weakens.",
-                    "DRBLACBS": "Rising tightening means credit availability is worsening.",
-                }.get(sid, ""),
-                "Risk Rule of Thumb": {
-                    "BAMLH0A0HYM2": ">= 6 high risk",
-                    "T10Y2Y": "< 0 inversion, < -0.5 deep inversion",
-                    "STLFSI4": ">= 1 high stress",
-                    "UNRATE": ">= 5 labor weakness",
-                    "DCOILWTICO": ">= 100 oil shock",
-                    "TEDRATE": ">= 1 funding stress",
-                    "DRBLACBS": ">= 30 aggressive tightening",
-                }.get(sid, "Interpret together with trend"),
-            }
-        )
+**Factors**
+- ROE
+- MDD
+- Volatility
+- PE
 
-    guide_df = pd.DataFrame(guide_rows).sort_values(["Category", "Indicator"])
-    st.dataframe(guide_df, use_container_width=True)
+Useful when you want a more **stable pullback strategy**.
+""",
+        top_n=top_n
+    )
+
 
 # ============================================================
-# Bottom section: focused interpretation
+# Raw data
 # ============================================================
-st.subheader("Quick Interpretation")
-
-def get_val(sid: str) -> float:
-    row = table[table["Series ID"] == sid]
-    if row.empty:
-        return np.nan
-    return float(row["Latest"].iloc[0])
-
-hy = get_val("BAMLH0A0HYM2")
-yc = get_val("T10Y2Y")
-fsi = get_val("STLFSI4")
-ted = get_val("TEDRATE")
-oil = get_val("DCOILWTICO")
-unr = get_val("UNRATE")
-
-messages = []
-
-if pd.notna(hy):
-    if hy >= 6:
-        messages.append("High-yield spreads are in a stressed zone.")
-    elif hy >= 4:
-        messages.append("High-yield spreads are elevated but not yet full-crisis level.")
-    else:
-        messages.append("High-yield spreads remain relatively contained.")
-
-if pd.notna(yc):
-    if yc < -0.5:
-        messages.append("The yield curve is deeply inverted, which historically aligns with recession risk.")
-    elif yc < 0:
-        messages.append("The yield curve is inverted, still a cautionary signal.")
-    else:
-        messages.append("The yield curve is no longer inverted or is normalizing.")
-
-if pd.notna(fsi):
-    if fsi >= 1:
-        messages.append("Financial stress is elevated.")
-    elif fsi >= 0:
-        messages.append("Financial stress is above normal but not extreme.")
-    else:
-        messages.append("Financial stress remains below historical average.")
-
-if pd.notna(ted):
-    if ted >= 1:
-        messages.append("Bank funding stress is elevated.")
-    elif ted >= 0.5:
-        messages.append("Funding stress is rising.")
-    else:
-        messages.append("Funding stress appears contained.")
-
-if pd.notna(oil):
-    if oil >= 100:
-        messages.append("Oil is at a shock-like level that can pressure inflation and growth.")
-    elif oil >= 80:
-        messages.append("Oil is high enough to keep inflation pressure alive.")
-    else:
-        messages.append("Oil is not currently in a shock zone.")
-
-if pd.notna(unr):
-    if unr >= 5:
-        messages.append("Unemployment is at a level consistent with a weakening economy.")
-    elif unr >= 4.3:
-        messages.append("Unemployment is drifting higher and deserves monitoring.")
-    else:
-        messages.append("Labor market still looks relatively firm.")
-
-for m in messages:
-    st.write(f"- {m}")
-
-# ============================================================
-# Footer
-# ============================================================
-st.markdown("---")
-st.caption(
-    "Tip: For practical market timing, focus first on High Yield Spread, 10Y-2Y curve, Financial Stress Index, TED Spread, Bank Lending Tightening, and Unemployment trend."
-)
+with st.expander("Show raw merged data"):
+    st.dataframe(
+        styled_table(
+            df.sort_values("Score_ROE_MDD", ascending=False).reset_index(drop=True)
+        ),
+        use_container_width=True
+    )
