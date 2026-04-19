@@ -1,0 +1,716 @@
+import os
+import time
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import requests
+import streamlit as st
+
+# ============================================================
+# Streamlit page config
+# ============================================================
+st.set_page_config(
+    page_title="Credit Spread Risk Dashboard",
+    page_icon="📉",
+    layout="wide",
+)
+
+st.title("📉 Credit Spread Risk Dashboard")
+st.caption("Monitor credit spreads, financial stress, and yield curve signals using FRED data.")
+
+# ============================================================
+# Config
+# ============================================================
+FRED_API_KEY = os.getenv("FRED_API_KEY", "")
+FRED_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
+
+SERIES_META = {
+    "HY_OAS": {
+        "ticker": "BAMLH0A0HYM2",
+        "name": "US High Yield OAS",
+        "category": "Credit",
+        "unit": "%",
+        "good_direction": "down",
+        "description": "High yield corporate bond spread. Very sensitive risk appetite indicator.",
+    },
+    "BBB_OAS": {
+        "ticker": "BAMLC0A4CBBB",
+        "name": "BBB Corporate OAS",
+        "category": "Credit",
+        "unit": "%",
+        "good_direction": "down",
+        "description": "BBB corporate bond spread. Shows stress in lower investment grade credit.",
+    },
+    "CORP_OAS": {
+        "ticker": "BAMLC0A0CM",
+        "name": "US Corporate OAS",
+        "category": "Credit",
+        "unit": "%",
+        "good_direction": "down",
+        "description": "Broad US corporate bond spread.",
+    },
+    "FIN_STRESS": {
+        "ticker": "STLFSI4",
+        "name": "St. Louis Fed Financial Stress Index",
+        "category": "Financial Conditions",
+        "unit": "index",
+        "good_direction": "down",
+        "description": "Measures stress across the US financial system.",
+    },
+    "US10Y": {
+        "ticker": "DGS10",
+        "name": "US 10Y Treasury Yield",
+        "category": "Rates",
+        "unit": "%",
+        "good_direction": "neutral",
+        "description": "US 10-year Treasury yield.",
+    },
+    "US2Y": {
+        "ticker": "DGS2",
+        "name": "US 2Y Treasury Yield",
+        "category": "Rates",
+        "unit": "%",
+        "good_direction": "neutral",
+        "description": "US 2-year Treasury yield.",
+    },
+    "US3M": {
+        "ticker": "DGS3MO",
+        "name": "US 3M Treasury Yield",
+        "category": "Rates",
+        "unit": "%",
+        "good_direction": "neutral",
+        "description": "US 3-month Treasury yield.",
+    },
+    "SPREAD_10Y2Y": {
+        "ticker": "T10Y2Y",
+        "name": "10Y - 2Y Treasury Spread",
+        "category": "Yield Curve",
+        "unit": "%p",
+        "good_direction": "up",
+        "description": "10-year minus 2-year Treasury spread.",
+    },
+    "SPREAD_10Y3M": {
+        "ticker": "T10Y3M",
+        "name": "10Y - 3M Treasury Spread",
+        "category": "Yield Curve",
+        "unit": "%p",
+        "good_direction": "up",
+        "description": "10-year minus 3-month Treasury spread.",
+    },
+}
+
+CORE_MONITOR = [
+    "HY_OAS",
+    "BBB_OAS",
+    "CORP_OAS",
+    "FIN_STRESS",
+    "SPREAD_10Y2Y",
+    "SPREAD_10Y3M",
+]
+
+LOOKBACK_MAP = {
+    "1Y": 365,
+    "3Y": 365 * 3,
+    "5Y": 365 * 5,
+    "10Y": 365 * 10,
+    "MAX": None,
+}
+
+# ============================================================
+# Helpers
+# ============================================================
+def safe_float(value):
+    try:
+        if value in [".", "", None]:
+            return np.nan
+        return float(value)
+    except Exception:
+        return np.nan
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def fetch_fred_series(series_id: str) -> pd.DataFrame:
+    params = {
+        "series_id": series_id,
+        "file_type": "json",
+        "sort_order": "asc",
+    }
+    if FRED_API_KEY:
+        params["api_key"] = FRED_API_KEY
+
+    retries = 3
+    for attempt in range(retries):
+        try:
+            response = requests.get(FRED_BASE_URL, params=params, timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+            observations = payload.get("observations", [])
+
+            df = pd.DataFrame(observations)
+            if df.empty:
+                return pd.DataFrame(columns=["date", series_id])
+
+            df["date"] = pd.to_datetime(df["date"])
+            df[series_id] = df["value"].apply(safe_float)
+            df = df[["date", series_id]].dropna()
+            return df
+
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+            else:
+                st.error(f"Failed to load FRED series {series_id}: {e}")
+                return pd.DataFrame(columns=["date", series_id])
+
+
+def merge_series(series_keys: list[str]) -> pd.DataFrame:
+    merged = None
+    for key in series_keys:
+        ticker = SERIES_META[key]["ticker"]
+        df = fetch_fred_series(ticker).rename(columns={ticker: key})
+
+        if merged is None:
+            merged = df.copy()
+        else:
+            merged = pd.merge(merged, df, on="date", how="outer")
+
+    if merged is None:
+        return pd.DataFrame()
+
+    merged = merged.sort_values("date").reset_index(drop=True)
+    return merged
+
+
+def filter_by_lookback(df: pd.DataFrame, lookback_label: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    days = LOOKBACK_MAP[lookback_label]
+    if days is None:
+        return df.copy()
+
+    cutoff = pd.Timestamp.today().normalize() - pd.Timedelta(days=days)
+    return df[df["date"] >= cutoff].copy()
+
+
+def latest_valid_value(df: pd.DataFrame, column: str):
+    if column not in df.columns:
+        return None
+    s = df[column].dropna()
+    if s.empty:
+        return None
+    return float(s.iloc[-1])
+
+
+def previous_valid_value(df: pd.DataFrame, column: str, periods_back: int = 21):
+    if column not in df.columns:
+        return None
+    s = df[column].dropna()
+    if len(s) <= periods_back:
+        return None
+    return float(s.iloc[-(periods_back + 1)])
+
+
+def delta_value(current, previous):
+    if current is None or previous is None:
+        return None
+    return current - previous
+
+
+def classify_credit_spread_hy(value):
+    if value is None or np.isnan(value):
+        return "N/A"
+    if value < 3.5:
+        return "Low Risk"
+    elif value < 5.0:
+        return "Normal"
+    elif value < 7.0:
+        return "Warning"
+    return "High Risk"
+
+
+def classify_credit_spread_bbb(value):
+    if value is None or np.isnan(value):
+        return "N/A"
+    if value < 1.5:
+        return "Low Risk"
+    elif value < 2.5:
+        return "Normal"
+    elif value < 3.5:
+        return "Warning"
+    return "High Risk"
+
+
+def classify_credit_spread_corp(value):
+    if value is None or np.isnan(value):
+        return "N/A"
+    if value < 1.2:
+        return "Low Risk"
+    elif value < 2.0:
+        return "Normal"
+    elif value < 3.0:
+        return "Warning"
+    return "High Risk"
+
+
+def classify_fin_stress(value):
+    if value is None or np.isnan(value):
+        return "N/A"
+    if value < 0:
+        return "Low Risk"
+    elif value < 1.0:
+        return "Normal"
+    elif value < 2.0:
+        return "Warning"
+    return "High Risk"
+
+
+def classify_curve_10y2y(value):
+    if value is None or np.isnan(value):
+        return "N/A"
+    if value > 0.5:
+        return "Healthy"
+    elif value > 0:
+        return "Flattening"
+    elif value > -0.5:
+        return "Inverted"
+    return "Deep Inversion"
+
+
+def classify_curve_10y3m(value):
+    if value is None or np.isnan(value):
+        return "N/A"
+    if value > 0.75:
+        return "Healthy"
+    elif value > 0:
+        return "Flattening"
+    elif value > -0.5:
+        return "Inverted"
+    return "Deep Inversion"
+
+
+def get_signal_label(key: str, value):
+    if key == "HY_OAS":
+        return classify_credit_spread_hy(value)
+    if key == "BBB_OAS":
+        return classify_credit_spread_bbb(value)
+    if key == "CORP_OAS":
+        return classify_credit_spread_corp(value)
+    if key == "FIN_STRESS":
+        return classify_fin_stress(value)
+    if key == "SPREAD_10Y2Y":
+        return classify_curve_10y2y(value)
+    if key == "SPREAD_10Y3M":
+        return classify_curve_10y3m(value)
+    return "N/A"
+
+
+def get_signal_comment(key: str, label: str) -> str:
+    comments = {
+        "HY_OAS": {
+            "Low Risk": "Credit market is calm and supportive for risk assets.",
+            "Normal": "Credit conditions are broadly normal.",
+            "Warning": "Risk appetite is weakening in high yield credit.",
+            "High Risk": "Credit stress is elevated and equity volatility risk is high.",
+        },
+        "BBB_OAS": {
+            "Low Risk": "Lower investment grade credit remains stable.",
+            "Normal": "Corporate funding conditions are normal.",
+            "Warning": "Stress is spreading into lower investment grade credit.",
+            "High Risk": "Funding conditions are materially deteriorating.",
+        },
+        "CORP_OAS": {
+            "Low Risk": "Broad corporate credit conditions are stable.",
+            "Normal": "Corporate credit environment is normal.",
+            "Warning": "Broad corporate spreads are widening.",
+            "High Risk": "Corporate credit stress is clearly elevated.",
+        },
+        "FIN_STRESS": {
+            "Low Risk": "The financial system is broadly stable.",
+            "Normal": "Financial conditions are within a normal range.",
+            "Warning": "Financial market stress is increasing.",
+            "High Risk": "System-wide financial stress is high.",
+        },
+        "SPREAD_10Y2Y": {
+            "Healthy": "Yield curve shape is consistent with a healthier backdrop.",
+            "Flattening": "Growth expectations are softening or policy pressure is rising.",
+            "Inverted": "Policy pressure and slowdown concerns are visible.",
+            "Deep Inversion": "Strong recession warning signal.",
+        },
+        "SPREAD_10Y3M": {
+            "Healthy": "Yield curve remains healthy.",
+            "Flattening": "Liquidity and growth expectations are softening.",
+            "Inverted": "Often interpreted as a recession warning.",
+            "Deep Inversion": "Very strong slowdown warning.",
+        },
+    }
+    return comments.get(key, {}).get(label, "")
+
+
+def infer_overall_risk(latest: dict) -> tuple[str, int]:
+    score = 0
+
+    hy = latest.get("HY_OAS")
+    bbb = latest.get("BBB_OAS")
+    corp = latest.get("CORP_OAS")
+    stress = latest.get("FIN_STRESS")
+    s10y2y = latest.get("SPREAD_10Y2Y")
+    s10y3m = latest.get("SPREAD_10Y3M")
+
+    if hy is not None:
+        if hy >= 7.0:
+            score += 3
+        elif hy >= 5.0:
+            score += 2
+        elif hy >= 3.5:
+            score += 1
+
+    if bbb is not None:
+        if bbb >= 3.5:
+            score += 3
+        elif bbb >= 2.5:
+            score += 2
+        elif bbb >= 1.5:
+            score += 1
+
+    if corp is not None:
+        if corp >= 3.0:
+            score += 3
+        elif corp >= 2.0:
+            score += 2
+        elif corp >= 1.2:
+            score += 1
+
+    if stress is not None:
+        if stress >= 2.0:
+            score += 3
+        elif stress >= 1.0:
+            score += 2
+        elif stress >= 0:
+            score += 1
+
+    if s10y2y is not None:
+        if s10y2y <= -0.5:
+            score += 2
+        elif s10y2y < 0:
+            score += 1
+
+    if s10y3m is not None:
+        if s10y3m <= -0.5:
+            score += 2
+        elif s10y3m < 0:
+            score += 1
+
+    if score <= 2:
+        return "Low Risk", score
+    elif score <= 5:
+        return "Moderate", score
+    elif score <= 8:
+        return "Elevated", score
+    return "High Risk", score
+
+
+def make_line_chart(df: pd.DataFrame, y_col: str, title: str, y_label: str):
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df[y_col],
+            mode="lines",
+            name=title,
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Date",
+        yaxis_title=y_label,
+        height=380,
+        margin=dict(l=30, r=20, t=60, b=30),
+    )
+    return fig
+
+
+def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str):
+    fig = go.Figure()
+
+    for col in columns:
+        if col not in df.columns:
+            continue
+        s = df[col].copy()
+        s = s.dropna()
+        if s.empty:
+            continue
+
+        base = s.iloc[0]
+        if base == 0:
+            normalized = df[col]
+        else:
+            normalized = df[col] / base
+
+        fig.add_trace(
+            go.Scatter(
+                x=df["date"],
+                y=normalized,
+                mode="lines",
+                name=SERIES_META[col]["name"],
+            )
+        )
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Date",
+        yaxis_title="Normalized (start = 1)",
+        height=450,
+        margin=dict(l=30, r=20, t=60, b=30),
+    )
+    return fig
+
+
+# ============================================================
+# Sidebar
+# ============================================================
+with st.sidebar:
+    st.header("Settings")
+    lookback = st.selectbox("Select lookback", list(LOOKBACK_MAP.keys()), index=2)
+    show_normalized = st.checkbox("Show normalized comparison", value=True)
+    show_raw_table = st.checkbox("Show raw latest table", value=True)
+
+    st.markdown("---")
+    st.subheader("Series Used")
+    for key in CORE_MONITOR:
+        meta = SERIES_META[key]
+        st.write(f"**{meta['name']}**")
+        st.caption(f"{meta['ticker']} · {meta['description']}")
+
+# ============================================================
+# Load data
+# ============================================================
+all_series = list(SERIES_META.keys())
+raw_df = merge_series(all_series)
+df = filter_by_lookback(raw_df, lookback)
+
+if df.empty:
+    st.warning("No data available.")
+    st.stop()
+
+# ============================================================
+# Latest snapshot
+# ============================================================
+latest = {}
+for key in SERIES_META.keys():
+    latest[key] = latest_valid_value(df, key)
+
+overall_risk, risk_score = infer_overall_risk(latest)
+
+col1, col2 = st.columns([1.2, 1])
+
+with col1:
+    st.subheader("Overall Risk Signal")
+    if overall_risk == "Low Risk":
+        st.success(f"Overall Risk: {overall_risk}  |  Score: {risk_score}")
+    elif overall_risk == "Moderate":
+        st.info(f"Overall Risk: {overall_risk}  |  Score: {risk_score}")
+    elif overall_risk == "Elevated":
+        st.warning(f"Overall Risk: {overall_risk}  |  Score: {risk_score}")
+    else:
+        st.error(f"Overall Risk: {overall_risk}  |  Score: {risk_score}")
+
+    st.write(
+        "This dashboard focuses on whether credit markets are tightening before equities fully react. "
+        "Widening spreads, rising financial stress, and deeper yield curve distortion usually deserve more caution."
+    )
+
+with col2:
+    st.subheader("Quick Interpretation")
+    quick_lines = []
+    for key in ["HY_OAS", "BBB_OAS", "FIN_STRESS", "SPREAD_10Y2Y", "SPREAD_10Y3M"]:
+        value = latest.get(key)
+        label = get_signal_label(key, value)
+        quick_lines.append(f"- **{SERIES_META[key]['name']}**: {label}")
+    st.markdown("\n".join(quick_lines))
+
+# ============================================================
+# Metrics row
+# ============================================================
+st.subheader("Latest Snapshot")
+
+metric_keys = ["HY_OAS", "BBB_OAS", "CORP_OAS", "FIN_STRESS", "SPREAD_10Y2Y", "SPREAD_10Y3M"]
+metric_cols = st.columns(len(metric_keys))
+
+for i, key in enumerate(metric_keys):
+    current = latest_valid_value(df, key)
+    previous = previous_valid_value(df, key, periods_back=21)
+    delta = delta_value(current, previous)
+    unit = SERIES_META[key]["unit"]
+    label = get_signal_label(key, current)
+
+    delta_text = None if delta is None else f"{delta:+.2f} {unit}"
+    value_text = "N/A" if current is None else f"{current:.2f} {unit}"
+
+    metric_cols[i].metric(
+        label=SERIES_META[key]["name"],
+        value=value_text,
+        delta=delta_text,
+    )
+    metric_cols[i].caption(label)
+
+# ============================================================
+# Signal summary table
+# ============================================================
+summary_rows = []
+for key in metric_keys:
+    current = latest_valid_value(df, key)
+    previous = previous_valid_value(df, key, periods_back=21)
+    delta = delta_value(current, previous)
+    label = get_signal_label(key, current)
+    comment = get_signal_comment(key, label)
+
+    summary_rows.append(
+        {
+            "Series": SERIES_META[key]["name"],
+            "Ticker": SERIES_META[key]["ticker"],
+            "Latest": None if current is None else round(current, 3),
+            "1M Change": None if delta is None else round(delta, 3),
+            "Unit": SERIES_META[key]["unit"],
+            "Signal": label,
+            "Interpretation": comment,
+        }
+    )
+
+summary_df = pd.DataFrame(summary_rows)
+
+if show_raw_table:
+    st.subheader("Signal Summary Table")
+    st.dataframe(summary_df, use_container_width=True)
+
+# ============================================================
+# Charts
+# ============================================================
+st.subheader("Core Signal Charts")
+
+for key in metric_keys:
+    if key not in df.columns:
+        continue
+    chart_df = df[["date", key]].dropna()
+    if chart_df.empty:
+        continue
+
+    fig = make_line_chart(
+        chart_df,
+        y_col=key,
+        title=f"{SERIES_META[key]['name']} ({SERIES_META[key]['ticker']})",
+        y_label=SERIES_META[key]["unit"],
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# Normalized comparison
+# ============================================================
+if show_normalized:
+    st.subheader("Normalized Comparison")
+    compare_cols = ["HY_OAS", "BBB_OAS", "CORP_OAS", "FIN_STRESS"]
+    compare_df = df[["date"] + compare_cols].dropna(how="all")
+    if not compare_df.empty:
+        fig = make_normalized_chart(
+            compare_df,
+            columns=compare_cols,
+            title="Normalized Credit / Stress Comparison",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# Rates section
+# ============================================================
+st.subheader("Treasury Yields")
+rate_cols = ["US10Y", "US2Y", "US3M"]
+rate_chart_df = df[["date"] + rate_cols].dropna(how="all")
+
+if not rate_chart_df.empty:
+    fig = go.Figure()
+    for col in rate_cols:
+        if col in rate_chart_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=rate_chart_df["date"],
+                    y=rate_chart_df[col],
+                    mode="lines",
+                    name=SERIES_META[col]["name"],
+                )
+            )
+
+    fig.update_layout(
+        title="US Treasury Yields",
+        xaxis_title="Date",
+        yaxis_title="%",
+        height=420,
+        margin=dict(l=30, r=20, t=60, b=30),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# Yield curve section
+# ============================================================
+st.subheader("Yield Curve Monitoring")
+curve_cols = ["SPREAD_10Y2Y", "SPREAD_10Y3M"]
+curve_chart_df = df[["date"] + curve_cols].dropna(how="all")
+
+if not curve_chart_df.empty:
+    fig = go.Figure()
+    for col in curve_cols:
+        if col in curve_chart_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=curve_chart_df["date"],
+                    y=curve_chart_df[col],
+                    mode="lines",
+                    name=SERIES_META[col]["name"],
+                )
+            )
+
+    fig.add_hline(y=0, line_dash="dash")
+    fig.update_layout(
+        title="Yield Curve Spreads",
+        xaxis_title="Date",
+        yaxis_title="%p",
+        height=420,
+        margin=dict(l=30, r=20, t=60, b=30),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# Risk guide
+# ============================================================
+st.subheader("How to Read This Dashboard")
+
+st.markdown(
+    """
+**Main idea**
+- Credit usually weakens before equity headlines fully reflect the problem.
+- If high yield spreads widen first, it can be an early warning.
+- If BBB spreads also widen, stress is spreading deeper into the financing system.
+- If financial stress rises at the same time, the warning becomes stronger.
+- If yield curves remain inverted or re-invert, growth and policy pressure may still be present.
+
+**Typical warning combination**
+- High Yield OAS rising
+- BBB OAS rising
+- Financial Stress rising
+- 10Y-2Y and 10Y-3M flat or inverted
+
+**Typical relief combination**
+- Credit spreads narrowing
+- Financial stress falling
+- Yield curve normalizing for the right reasons
+"""
+)
+
+# ============================================================
+# Footer
+# ============================================================
+st.markdown("---")
+st.caption(
+    f"Last updated in app runtime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | "
+    "Data source: Federal Reserve Economic Data (FRED)"
+)
