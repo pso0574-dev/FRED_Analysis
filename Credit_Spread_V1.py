@@ -67,7 +67,7 @@ SERIES_META = {
     },
     "US2Y": {
         "ticker": "DGS2",
-        "name": "US 2-year Treasury yield",
+        "name": "US 2Y Treasury Yield",
         "category": "Rates",
         "unit": "%",
         "description": "US 2-year Treasury yield.",
@@ -258,7 +258,7 @@ def convert_units(df: pd.DataFrame) -> pd.DataFrame:
         if col in out.columns:
             out[col] = out[col] / 1000.0
 
-    # RRP / MMF_RETAIL already billions
+    # RRP and MMF_RETAIL are already in billions
     return out
 
 
@@ -272,7 +272,6 @@ def add_sparse_safe_derived_series(df: pd.DataFrame) -> pd.DataFrame:
                 net_df["FED_BALANCE_SHEET"] - net_df["TGA"] - net_df["RRP"]
             )
             net_df["NET_LIQUIDITY_4W_CHANGE"] = net_df["NET_LIQUIDITY_PROXY"].diff(4)
-
             out = out.merge(
                 net_df[["date", "NET_LIQUIDITY_PROXY", "NET_LIQUIDITY_4W_CHANGE"]],
                 on="date",
@@ -284,7 +283,6 @@ def add_sparse_safe_derived_series(df: pd.DataFrame) -> pd.DataFrame:
         if not mmf.empty:
             mmf["MMF_FLOW_PROXY"] = mmf["MMF_RETAIL"].diff()
             mmf["MMF_FLOW_PROXY_4W_MA"] = mmf["MMF_FLOW_PROXY"].rolling(4).mean()
-
             out = out.merge(
                 mmf[["date", "MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]],
                 on="date",
@@ -634,6 +632,79 @@ def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str, use_
     return fig, valid_trace_count
 
 
+def make_liquidity_dual_axis_chart(df: pd.DataFrame):
+    fig = go.Figure()
+
+    color_map = {
+        "FED_BALANCE_SHEET": "#4FC3F7",
+        "RRP": "#1E88E5",
+        "TGA": "#FFB74D",
+    }
+
+    if "FED_BALANCE_SHEET" in df.columns:
+        s = df[["date", "FED_BALANCE_SHEET"]].dropna()
+        if not s.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=s["date"],
+                    y=s["FED_BALANCE_SHEET"],
+                    mode="lines",
+                    name="Fed Balance Sheet",
+                    line=dict(width=3, color=color_map["FED_BALANCE_SHEET"]),
+                    yaxis="y1",
+                )
+            )
+
+    if "RRP" in df.columns:
+        s = df[["date", "RRP"]].dropna()
+        if not s.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=s["date"],
+                    y=s["RRP"],
+                    mode="lines",
+                    name="Reverse Repo",
+                    line=dict(width=3, color=color_map["RRP"]),
+                    yaxis="y2",
+                )
+            )
+
+    if "TGA" in df.columns:
+        s = df[["date", "TGA"]].dropna()
+        if not s.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=s["date"],
+                    y=s["TGA"],
+                    mode="lines",
+                    name="Treasury General Account",
+                    line=dict(width=3, color=color_map["TGA"]),
+                    yaxis="y2",
+                )
+            )
+
+    fig.update_layout(
+        title="Liquidity Components (Raw Values, Excluding Retail MMF)",
+        xaxis=dict(title="Date"),
+        yaxis=dict(
+            title="Fed Balance Sheet (USD bn)",
+            side="left",
+            showgrid=True,
+        ),
+        yaxis2=dict(
+            title="RRP / TGA (USD bn)",
+            overlaying="y",
+            side="right",
+            showgrid=False,
+        ),
+        height=500,
+        margin=dict(l=30, r=30, t=60, b=30),
+        hovermode="x unified",
+        legend=dict(orientation="v"),
+    )
+
+    return fig
+
 # ============================================================
 # Sidebar
 # ============================================================
@@ -823,10 +894,6 @@ if show_summary_table:
             previous = previous_valid_value_by_days(df, key, days_back=30)
             delta = delta_value(current, previous)
 
-            signal_value = current
-            if key in ["NET_LIQUIDITY_4W_CHANGE", "MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]:
-                signal_value = current
-
             summary_rows.append(
                 {
                     "Series": key,
@@ -834,7 +901,7 @@ if show_summary_table:
                     "Latest": None if current is None else round(current, 1),
                     "1M Change": None if delta is None else round(delta, 1),
                     "Unit": "USD bn",
-                    "Signal": classify_liquidity_delta(signal_value),
+                    "Signal": classify_liquidity_delta(current),
                     "Interpretation": desc,
                 }
             )
@@ -927,6 +994,7 @@ if not curve_chart_df.empty:
 if show_liquidity:
     st.subheader("Liquidity Charts")
 
+    # Individual liquidity charts
     liquidity_single_chart_order = [
         "FED_BALANCE_SHEET",
         "RRP",
@@ -955,6 +1023,19 @@ if show_liquidity:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
+    # Raw combined liquidity chart without normalization, excluding Retail MMF
+    st.subheader("Liquidity Components (Raw, Excluding Retail MMF)")
+
+    liq_raw_cols = ["FED_BALANCE_SHEET", "RRP", "TGA"]
+    liq_raw_df = df[["date"] + liq_raw_cols].dropna(subset=liq_raw_cols, how="all")
+
+    if not liq_raw_df.empty:
+        fig = make_liquidity_dual_axis_chart(liq_raw_df)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No raw liquidity component data available for the selected lookback.")
+
+    # MMF flow proxy chart
     if all(c in df.columns for c in ["MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]):
         mmf_df = df[["date", "MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]].dropna(
             subset=["MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"],
@@ -971,23 +1052,6 @@ if show_liquidity:
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No MMF flow data available for the selected lookback.")
-
-    st.subheader("Normalized Liquidity Components (Log Scale)")
-
-    liq_norm_cols = ["FED_BALANCE_SHEET", "RRP", "TGA", "MMF_RETAIL"]
-    liq_norm_df = df[["date"] + liq_norm_cols].dropna(subset=liq_norm_cols, how="all")
-
-    if not liq_norm_df.empty:
-        fig, trace_count = make_normalized_chart(
-            liq_norm_df,
-            columns=liq_norm_cols,
-            title="Normalized Liquidity Components (Log Scale)",
-            use_log_y=True,
-        )
-        if trace_count > 0:
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No valid positive normalized liquidity series available for log-scale display.")
 
 # ============================================================
 # Normalized comparison
