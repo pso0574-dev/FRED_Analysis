@@ -12,13 +12,13 @@ import streamlit as st
 # Streamlit page config
 # ============================================================
 st.set_page_config(
-    page_title="Credit Spread Risk Dashboard",
+    page_title="Credit & Liquidity Risk Dashboard",
     page_icon="📉",
     layout="wide",
 )
 
-st.title("📉 Credit Spread Risk Dashboard")
-st.caption("Monitor credit spreads, financial stress, and yield curve signals using FRED data.")
+st.title("📉 Credit & Liquidity Risk Dashboard")
+st.caption("Monitor credit spreads, financial stress, yield curve, and liquidity conditions using FRED data.")
 
 # ============================================================
 # Config
@@ -27,13 +27,14 @@ FRED_API_KEY = os.getenv("FRED_API_KEY", "")
 FRED_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
 
 SERIES_META = {
+    # ---------------- Credit ----------------
     "HY_OAS": {
         "ticker": "BAMLH0A0HYM2",
         "name": "US High Yield OAS",
         "category": "Credit",
         "unit": "%",
         "good_direction": "down",
-        "description": "High yield corporate bond spread. Very sensitive risk appetite indicator.",
+        "description": "High yield corporate bond spread. Sensitive risk appetite indicator.",
     },
     "BBB_OAS": {
         "ticker": "BAMLC0A4CBBB",
@@ -59,6 +60,8 @@ SERIES_META = {
         "good_direction": "down",
         "description": "Measures stress across the US financial system.",
     },
+
+    # ---------------- Rates ----------------
     "US10Y": {
         "ticker": "DGS10",
         "name": "US 10Y Treasury Yield",
@@ -99,18 +102,50 @@ SERIES_META = {
         "good_direction": "up",
         "description": "10-year minus 3-month Treasury spread.",
     },
+
+    # ---------------- Liquidity ----------------
+    "FED_BALANCE_SHEET": {
+        "ticker": "WALCL",
+        "name": "Fed Balance Sheet",
+        "category": "Liquidity",
+        "unit": "USD bn",
+        "good_direction": "up",
+        "description": "Federal Reserve total assets.",
+    },
+    "RRP": {
+        "ticker": "RRPONTSYD",
+        "name": "Reverse Repo",
+        "category": "Liquidity",
+        "unit": "USD bn",
+        "good_direction": "down",
+        "description": "Overnight Reverse Repo usage.",
+    },
+    "TGA": {
+        "ticker": "WTREGEN",
+        "name": "Treasury General Account",
+        "category": "Liquidity",
+        "unit": "USD bn",
+        "good_direction": "down",
+        "description": "Treasury cash balance at the Fed.",
+    },
+    "MMF_RETAIL": {
+        "ticker": "WRMFNS",
+        "name": "Retail Money Market Funds",
+        "category": "Liquidity",
+        "unit": "USD bn",
+        "good_direction": "neutral",
+        "description": "Retail money market fund assets.",
+    },
 }
 
-CORE_MONITOR = [
-    "HY_OAS",
-    "BBB_OAS",
-    "CORP_OAS",
-    "FIN_STRESS",
-    "SPREAD_10Y2Y",
-    "SPREAD_10Y3M",
-]
+CREDIT_KEYS = ["HY_OAS", "BBB_OAS", "CORP_OAS", "FIN_STRESS"]
+CURVE_KEYS = ["SPREAD_10Y2Y", "SPREAD_10Y3M"]
+RATE_KEYS = ["US10Y", "US2Y", "US3M"]
+LIQUIDITY_KEYS = ["FED_BALANCE_SHEET", "RRP", "TGA", "MMF_RETAIL"]
 
 LOOKBACK_MAP = {
+    "3M": 90,
+    "6M": 180,
     "1Y": 365,
     "3Y": 365 * 3,
     "5Y": 365 * 5,
@@ -219,6 +254,10 @@ def delta_value(current, previous):
     return current - previous
 
 
+def to_billions(series: pd.Series) -> pd.Series:
+    return series / 1000.0
+
+
 def classify_credit_spread_hy(value):
     if value is None or np.isnan(value):
         return "N/A"
@@ -289,6 +328,20 @@ def classify_curve_10y3m(value):
     elif value > -0.5:
         return "Inverted"
     return "Deep Inversion"
+
+
+def classify_liquidity_delta(value):
+    if value is None or np.isnan(value):
+        return "N/A"
+    if value > 200:
+        return "Strong Positive"
+    elif value > 50:
+        return "Positive"
+    elif value > -50:
+        return "Neutral"
+    elif value > -200:
+        return "Negative"
+    return "Strong Negative"
 
 
 def get_signal_label(key: str, value):
@@ -432,14 +485,36 @@ def make_line_chart(df: pd.DataFrame, y_col: str, title: str, y_label: str):
     return fig
 
 
+def make_multi_line_chart(df: pd.DataFrame, columns: list[str], title: str, y_label: str):
+    fig = go.Figure()
+    for col in columns:
+        if col not in df.columns:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=df["date"],
+                y=df[col],
+                mode="lines",
+                name=col,
+            )
+        )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Date",
+        yaxis_title=y_label,
+        height=420,
+        margin=dict(l=30, r=20, t=60, b=30),
+    )
+    return fig
+
+
 def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str):
     fig = go.Figure()
 
     for col in columns:
         if col not in df.columns:
             continue
-        s = df[col].copy()
-        s = s.dropna()
+        s = df[col].dropna()
         if s.empty:
             continue
 
@@ -454,7 +529,7 @@ def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str):
                 x=df["date"],
                 y=normalized,
                 mode="lines",
-                name=SERIES_META[col]["name"],
+                name=col,
             )
         )
 
@@ -468,6 +543,26 @@ def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str):
     return fig
 
 
+def prepare_liquidity_features(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    for col in ["FED_BALANCE_SHEET", "RRP", "TGA", "MMF_RETAIL"]:
+        if col in out.columns:
+            out[col] = to_billions(out[col])
+
+    if all(c in out.columns for c in ["FED_BALANCE_SHEET", "TGA", "RRP"]):
+        out["NET_LIQUIDITY_PROXY"] = out["FED_BALANCE_SHEET"] - out["TGA"] - out["RRP"]
+
+    if "MMF_RETAIL" in out.columns:
+        out["MMF_FLOW_PROXY"] = out["MMF_RETAIL"].diff()
+        out["MMF_FLOW_PROXY_4W_MA"] = out["MMF_FLOW_PROXY"].rolling(4).mean()
+
+    if "NET_LIQUIDITY_PROXY" in out.columns:
+        out["NET_LIQUIDITY_4W_CHANGE"] = out["NET_LIQUIDITY_PROXY"].diff(4)
+
+    return out
+
+
 # ============================================================
 # Sidebar
 # ============================================================
@@ -475,11 +570,12 @@ with st.sidebar:
     st.header("Settings")
     lookback = st.selectbox("Select lookback", list(LOOKBACK_MAP.keys()), index=2)
     show_normalized = st.checkbox("Show normalized comparison", value=True)
-    show_raw_table = st.checkbox("Show raw latest table", value=True)
+    show_summary_table = st.checkbox("Show summary table", value=True)
+    show_liquidity = st.checkbox("Show liquidity section", value=True)
 
     st.markdown("---")
-    st.subheader("Series Used")
-    for key in CORE_MONITOR:
+    st.subheader("Core Series")
+    for key in CREDIT_KEYS + CURVE_KEYS + RATE_KEYS + LIQUIDITY_KEYS:
         meta = SERIES_META[key]
         st.write(f"**{meta['name']}**")
         st.caption(f"{meta['ticker']} · {meta['description']}")
@@ -489,6 +585,7 @@ with st.sidebar:
 # ============================================================
 all_series = list(SERIES_META.keys())
 raw_df = merge_series(all_series)
+raw_df = prepare_liquidity_features(raw_df)
 df = filter_by_lookback(raw_df, lookback)
 
 if df.empty:
@@ -502,6 +599,11 @@ latest = {}
 for key in SERIES_META.keys():
     latest[key] = latest_valid_value(df, key)
 
+latest["NET_LIQUIDITY_PROXY"] = latest_valid_value(df, "NET_LIQUIDITY_PROXY")
+latest["MMF_FLOW_PROXY"] = latest_valid_value(df, "MMF_FLOW_PROXY")
+latest["MMF_FLOW_PROXY_4W_MA"] = latest_valid_value(df, "MMF_FLOW_PROXY_4W_MA")
+latest["NET_LIQUIDITY_4W_CHANGE"] = latest_valid_value(df, "NET_LIQUIDITY_4W_CHANGE")
+
 overall_risk, risk_score = infer_overall_risk(latest)
 
 col1, col2 = st.columns([1.2, 1])
@@ -509,17 +611,18 @@ col1, col2 = st.columns([1.2, 1])
 with col1:
     st.subheader("Overall Risk Signal")
     if overall_risk == "Low Risk":
-        st.success(f"Overall Risk: {overall_risk}  |  Score: {risk_score}")
+        st.success(f"Overall Risk: {overall_risk} | Score: {risk_score}")
     elif overall_risk == "Moderate":
-        st.info(f"Overall Risk: {overall_risk}  |  Score: {risk_score}")
+        st.info(f"Overall Risk: {overall_risk} | Score: {risk_score}")
     elif overall_risk == "Elevated":
-        st.warning(f"Overall Risk: {overall_risk}  |  Score: {risk_score}")
+        st.warning(f"Overall Risk: {overall_risk} | Score: {risk_score}")
     else:
-        st.error(f"Overall Risk: {overall_risk}  |  Score: {risk_score}")
+        st.error(f"Overall Risk: {overall_risk} | Score: {risk_score}")
 
     st.write(
-        "This dashboard focuses on whether credit markets are tightening before equities fully react. "
-        "Widening spreads, rising financial stress, and deeper yield curve distortion usually deserve more caution."
+        "This dashboard tracks whether credit markets and liquidity conditions are improving or tightening "
+        "before equities fully react. Widening credit spreads, rising financial stress, shrinking liquidity, "
+        "and weak MMF flow behavior deserve more caution."
     )
 
 with col2:
@@ -529,12 +632,19 @@ with col2:
         value = latest.get(key)
         label = get_signal_label(key, value)
         quick_lines.append(f"- **{SERIES_META[key]['name']}**: {label}")
+
+    liquidity_change_label = classify_liquidity_delta(latest.get("NET_LIQUIDITY_4W_CHANGE"))
+    quick_lines.append(f"- **Net Liquidity 4W Change**: {liquidity_change_label}")
+
+    mmf_flow_label = classify_liquidity_delta(latest.get("MMF_FLOW_PROXY_4W_MA"))
+    quick_lines.append(f"- **MMF Flow 4W MA**: {mmf_flow_label}")
+
     st.markdown("\n".join(quick_lines))
 
 # ============================================================
-# Metrics row
+# Credit metrics row
 # ============================================================
-st.subheader("Latest Snapshot")
+st.subheader("Credit / Curve Snapshot")
 
 metric_keys = ["HY_OAS", "BBB_OAS", "CORP_OAS", "FIN_STRESS", "SPREAD_10Y2Y", "SPREAD_10Y3M"]
 metric_cols = st.columns(len(metric_keys))
@@ -557,38 +667,104 @@ for i, key in enumerate(metric_keys):
     metric_cols[i].caption(label)
 
 # ============================================================
-# Signal summary table
+# Liquidity metrics row
 # ============================================================
-summary_rows = []
-for key in metric_keys:
-    current = latest_valid_value(df, key)
-    previous = previous_valid_value(df, key, periods_back=21)
-    delta = delta_value(current, previous)
-    label = get_signal_label(key, current)
-    comment = get_signal_comment(key, label)
+if show_liquidity:
+    st.subheader("Liquidity Snapshot")
 
-    summary_rows.append(
-        {
-            "Series": SERIES_META[key]["name"],
-            "Ticker": SERIES_META[key]["ticker"],
-            "Latest": None if current is None else round(current, 3),
-            "1M Change": None if delta is None else round(delta, 3),
-            "Unit": SERIES_META[key]["unit"],
-            "Signal": label,
-            "Interpretation": comment,
-        }
-    )
+    liq_metric_cols = st.columns(6)
 
-summary_df = pd.DataFrame(summary_rows)
+    liquidity_metric_config = [
+        ("FED_BALANCE_SHEET", "Fed Balance Sheet"),
+        ("RRP", "Reverse Repo"),
+        ("TGA", "TGA"),
+        ("NET_LIQUIDITY_PROXY", "Net Liquidity Proxy"),
+        ("MMF_FLOW_PROXY", "MMF Weekly Flow Proxy"),
+        ("MMF_FLOW_PROXY_4W_MA", "MMF Flow 4W MA"),
+    ]
 
-if show_raw_table:
+    for i, (key, label_name) in enumerate(liquidity_metric_config):
+        current = latest_valid_value(df, key)
+        previous = previous_valid_value(df, key, periods_back=4)
+        delta = delta_value(current, previous)
+
+        value_text = "N/A" if current is None else f"{current:,.1f}"
+        delta_text = None if delta is None else f"{delta:+,.1f}"
+
+        liq_metric_cols[i].metric(
+            label=label_name,
+            value=value_text,
+            delta=delta_text,
+        )
+
+# ============================================================
+# Summary table
+# ============================================================
+if show_summary_table:
     st.subheader("Signal Summary Table")
+
+    summary_rows = []
+    for key in metric_keys:
+        current = latest_valid_value(df, key)
+        previous = previous_valid_value(df, key, periods_back=21)
+        delta = delta_value(current, previous)
+        label = get_signal_label(key, current)
+        comment = get_signal_comment(key, label)
+
+        summary_rows.append(
+            {
+                "Series": SERIES_META[key]["name"],
+                "Ticker": SERIES_META[key]["ticker"],
+                "Latest": None if current is None else round(current, 3),
+                "1M Change": None if delta is None else round(delta, 3),
+                "Unit": SERIES_META[key]["unit"],
+                "Signal": label,
+                "Interpretation": comment,
+            }
+        )
+
+    if show_liquidity:
+        for key in ["FED_BALANCE_SHEET", "RRP", "TGA", "MMF_RETAIL"]:
+            current = latest_valid_value(df, key)
+            previous = previous_valid_value(df, key, periods_back=4)
+            delta = delta_value(current, previous)
+
+            summary_rows.append(
+                {
+                    "Series": SERIES_META[key]["name"],
+                    "Ticker": SERIES_META[key]["ticker"],
+                    "Latest": None if current is None else round(current, 1),
+                    "1M Change": None if delta is None else round(delta, 1),
+                    "Unit": SERIES_META[key]["unit"],
+                    "Signal": "Liquidity",
+                    "Interpretation": SERIES_META[key]["description"],
+                }
+            )
+
+        for key in ["NET_LIQUIDITY_PROXY", "MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]:
+            current = latest_valid_value(df, key)
+            previous = previous_valid_value(df, key, periods_back=4)
+            delta = delta_value(current, previous)
+
+            summary_rows.append(
+                {
+                    "Series": key,
+                    "Ticker": "Derived",
+                    "Latest": None if current is None else round(current, 1),
+                    "1M Change": None if delta is None else round(delta, 1),
+                    "Unit": "USD bn",
+                    "Signal": classify_liquidity_delta(current),
+                    "Interpretation": "Derived internal liquidity proxy.",
+                }
+            )
+
+    summary_df = pd.DataFrame(summary_rows)
     st.dataframe(summary_df, use_container_width=True)
 
 # ============================================================
-# Charts
+# Credit charts
 # ============================================================
-st.subheader("Core Signal Charts")
+st.subheader("Credit Signal Charts")
 
 for key in metric_keys:
     if key not in df.columns:
@@ -606,40 +782,22 @@ for key in metric_keys:
     st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
-# Normalized comparison
-# ============================================================
-if show_normalized:
-    st.subheader("Normalized Comparison")
-    compare_cols = ["HY_OAS", "BBB_OAS", "CORP_OAS", "FIN_STRESS"]
-    compare_df = df[["date"] + compare_cols].dropna(how="all")
-    if not compare_df.empty:
-        fig = make_normalized_chart(
-            compare_df,
-            columns=compare_cols,
-            title="Normalized Credit / Stress Comparison",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-# ============================================================
-# Rates section
+# Treasury rates chart
 # ============================================================
 st.subheader("Treasury Yields")
-rate_cols = ["US10Y", "US2Y", "US3M"]
-rate_chart_df = df[["date"] + rate_cols].dropna(how="all")
 
+rate_chart_df = df[["date"] + RATE_KEYS].dropna(how="all")
 if not rate_chart_df.empty:
     fig = go.Figure()
-    for col in rate_cols:
-        if col in rate_chart_df.columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=rate_chart_df["date"],
-                    y=rate_chart_df[col],
-                    mode="lines",
-                    name=SERIES_META[col]["name"],
-                )
+    for col in RATE_KEYS:
+        fig.add_trace(
+            go.Scatter(
+                x=rate_chart_df["date"],
+                y=rate_chart_df[col],
+                mode="lines",
+                name=SERIES_META[col]["name"],
             )
-
+        )
     fig.update_layout(
         title="US Treasury Yields",
         xaxis_title="Date",
@@ -650,25 +808,22 @@ if not rate_chart_df.empty:
     st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
-# Yield curve section
+# Yield curve chart
 # ============================================================
 st.subheader("Yield Curve Monitoring")
-curve_cols = ["SPREAD_10Y2Y", "SPREAD_10Y3M"]
-curve_chart_df = df[["date"] + curve_cols].dropna(how="all")
 
+curve_chart_df = df[["date"] + CURVE_KEYS].dropna(how="all")
 if not curve_chart_df.empty:
     fig = go.Figure()
-    for col in curve_cols:
-        if col in curve_chart_df.columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=curve_chart_df["date"],
-                    y=curve_chart_df[col],
-                    mode="lines",
-                    name=SERIES_META[col]["name"],
-                )
+    for col in CURVE_KEYS:
+        fig.add_trace(
+            go.Scatter(
+                x=curve_chart_df["date"],
+                y=curve_chart_df[col],
+                mode="lines",
+                name=SERIES_META[col]["name"],
             )
-
+        )
     fig.add_hline(y=0, line_dash="dash")
     fig.update_layout(
         title="Yield Curve Spreads",
@@ -680,29 +835,123 @@ if not curve_chart_df.empty:
     st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
-# Risk guide
+# Liquidity charts
+# ============================================================
+if show_liquidity:
+    st.subheader("Liquidity Charts")
+
+    # Main liquidity stocks
+    liq_base_cols = ["FED_BALANCE_SHEET", "RRP", "TGA", "MMF_RETAIL"]
+    liq_df = df[["date"] + liq_base_cols].dropna(how="all")
+
+    if not liq_df.empty:
+        fig = go.Figure()
+        for col in liq_base_cols:
+            if col in liq_df.columns:
+                fig.add_trace(
+                    go.Scatter(
+                        x=liq_df["date"],
+                        y=liq_df[col],
+                        mode="lines",
+                        name=SERIES_META[col]["name"],
+                    )
+                )
+        fig.update_layout(
+            title="Liquidity Components",
+            xaxis_title="Date",
+            yaxis_title="USD bn",
+            height=460,
+            margin=dict(l=30, r=20, t=60, b=30),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Net liquidity proxy
+    if "NET_LIQUIDITY_PROXY" in df.columns:
+        net_liq_df = df[["date", "NET_LIQUIDITY_PROXY"]].dropna()
+        if not net_liq_df.empty:
+            fig = make_line_chart(
+                net_liq_df,
+                y_col="NET_LIQUIDITY_PROXY",
+                title="Net Liquidity Proxy (Fed Balance Sheet - TGA - RRP)",
+                y_label="USD bn",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    # MMF flow proxy
+    if all(c in df.columns for c in ["MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]):
+        mmf_df = df[["date", "MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]].dropna(how="all")
+        if not mmf_df.empty:
+            fig = go.Figure()
+            fig.add_trace(
+                go.Bar(
+                    x=mmf_df["date"],
+                    y=mmf_df["MMF_FLOW_PROXY"],
+                    name="MMF Weekly Flow Proxy",
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=mmf_df["date"],
+                    y=mmf_df["MMF_FLOW_PROXY_4W_MA"],
+                    mode="lines",
+                    name="MMF Flow Proxy 4W MA",
+                )
+            )
+            fig.add_hline(y=0, line_dash="dash")
+            fig.update_layout(
+                title="Money Market Fund Flow Proxy",
+                xaxis_title="Date",
+                yaxis_title="USD bn",
+                height=460,
+                margin=dict(l=30, r=20, t=60, b=30),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# Normalized comparison
+# ============================================================
+if show_normalized:
+    st.subheader("Normalized Comparison")
+
+    norm_cols = ["HY_OAS", "BBB_OAS", "CORP_OAS", "FIN_STRESS"]
+    if show_liquidity and "NET_LIQUIDITY_PROXY" in df.columns:
+        norm_cols.append("NET_LIQUIDITY_PROXY")
+
+    norm_df = df[["date"] + norm_cols].dropna(how="all")
+    if not norm_df.empty:
+        fig = make_normalized_chart(
+            norm_df,
+            columns=norm_cols,
+            title="Normalized Credit / Stress / Liquidity Comparison",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# Dashboard reading guide
 # ============================================================
 st.subheader("How to Read This Dashboard")
 
 st.markdown(
     """
 **Main idea**
-- Credit usually weakens before equity headlines fully reflect the problem.
-- If high yield spreads widen first, it can be an early warning.
-- If BBB spreads also widen, stress is spreading deeper into the financing system.
-- If financial stress rises at the same time, the warning becomes stronger.
-- If yield curves remain inverted or re-invert, growth and policy pressure may still be present.
+- Credit often weakens before equity headlines fully reflect the problem.
+- Liquidity often supports or suppresses the magnitude of the move.
+- Widening credit spreads + rising financial stress + falling liquidity is a weaker backdrop.
+- Tightening spreads + stable stress + improving liquidity is a more supportive backdrop.
 
 **Typical warning combination**
 - High Yield OAS rising
 - BBB OAS rising
 - Financial Stress rising
-- 10Y-2Y and 10Y-3M flat or inverted
+- Yield curve flat or inverted
+- Net Liquidity Proxy falling
+- MMF flow weak or turning negative
 
-**Typical relief combination**
+**Typical supportive combination**
 - Credit spreads narrowing
 - Financial stress falling
-- Yield curve normalizing for the right reasons
+- Net liquidity rising
+- Money market cash starting to redeploy
 """
 )
 
