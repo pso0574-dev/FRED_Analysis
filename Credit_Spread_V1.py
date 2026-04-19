@@ -254,8 +254,65 @@ def delta_value(current, previous):
     return current - previous
 
 
-def to_billions(series: pd.Series) -> pd.Series:
-    return series / 1000.0
+def convert_units(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert only series that are in millions to billions.
+    Keep already-billions series unchanged.
+    """
+    out = df.copy()
+
+    # FRED series in millions -> convert to billions
+    for col in ["FED_BALANCE_SHEET", "TGA"]:
+        if col in out.columns:
+            out[col] = out[col] / 1000.0
+
+    # RRP and MMF_RETAIL are already in billions
+    return out
+
+
+def add_sparse_safe_derived_series(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute derived series using non-null aligned observations only.
+    This avoids outer-merge NaN gaps breaking diff() calculations.
+    """
+    out = df.copy()
+    out = out.sort_values("date").reset_index(drop=True)
+
+    # Net Liquidity Proxy
+    if all(c in out.columns for c in ["FED_BALANCE_SHEET", "TGA", "RRP"]):
+        net_df = out[["date", "FED_BALANCE_SHEET", "TGA", "RRP"]].dropna().copy()
+        if not net_df.empty:
+            net_df["NET_LIQUIDITY_PROXY"] = (
+                net_df["FED_BALANCE_SHEET"] - net_df["TGA"] - net_df["RRP"]
+            )
+            net_df["NET_LIQUIDITY_4W_CHANGE"] = net_df["NET_LIQUIDITY_PROXY"].diff(4)
+
+            out = out.merge(
+                net_df[["date", "NET_LIQUIDITY_PROXY", "NET_LIQUIDITY_4W_CHANGE"]],
+                on="date",
+                how="left",
+            )
+
+    # MMF flow proxy
+    if "MMF_RETAIL" in out.columns:
+        mmf = out[["date", "MMF_RETAIL"]].dropna().copy()
+        if not mmf.empty:
+            mmf["MMF_FLOW_PROXY"] = mmf["MMF_RETAIL"].diff()
+            mmf["MMF_FLOW_PROXY_4W_MA"] = mmf["MMF_FLOW_PROXY"].rolling(4).mean()
+
+            out = out.merge(
+                mmf[["date", "MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]],
+                on="date",
+                how="left",
+            )
+
+    return out
+
+
+def prepare_liquidity_features(df: pd.DataFrame) -> pd.DataFrame:
+    out = convert_units(df)
+    out = add_sparse_safe_derived_series(out)
+    return out
 
 
 def classify_credit_spread_hy(value):
@@ -485,29 +542,6 @@ def make_line_chart(df: pd.DataFrame, y_col: str, title: str, y_label: str):
     return fig
 
 
-def make_multi_line_chart(df: pd.DataFrame, columns: list[str], title: str, y_label: str):
-    fig = go.Figure()
-    for col in columns:
-        if col not in df.columns:
-            continue
-        fig.add_trace(
-            go.Scatter(
-                x=df["date"],
-                y=df[col],
-                mode="lines",
-                name=col,
-            )
-        )
-    fig.update_layout(
-        title=title,
-        xaxis_title="Date",
-        yaxis_title=y_label,
-        height=420,
-        margin=dict(l=30, r=20, t=60, b=30),
-    )
-    return fig
-
-
 def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str):
     fig = go.Figure()
 
@@ -541,26 +575,6 @@ def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str):
         margin=dict(l=30, r=20, t=60, b=30),
     )
     return fig
-
-
-def prepare_liquidity_features(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-
-    for col in ["FED_BALANCE_SHEET", "RRP", "TGA", "MMF_RETAIL"]:
-        if col in out.columns:
-            out[col] = to_billions(out[col])
-
-    if all(c in out.columns for c in ["FED_BALANCE_SHEET", "TGA", "RRP"]):
-        out["NET_LIQUIDITY_PROXY"] = out["FED_BALANCE_SHEET"] - out["TGA"] - out["RRP"]
-
-    if "MMF_RETAIL" in out.columns:
-        out["MMF_FLOW_PROXY"] = out["MMF_RETAIL"].diff()
-        out["MMF_FLOW_PROXY_4W_MA"] = out["MMF_FLOW_PROXY"].rolling(4).mean()
-
-    if "NET_LIQUIDITY_PROXY" in out.columns:
-        out["NET_LIQUIDITY_4W_CHANGE"] = out["NET_LIQUIDITY_PROXY"].diff(4)
-
-    return out
 
 
 # ============================================================
@@ -879,7 +893,11 @@ if show_liquidity:
 
     # MMF flow proxy
     if all(c in df.columns for c in ["MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]):
-        mmf_df = df[["date", "MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]].dropna(how="all")
+        mmf_df = df[["date", "MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]].dropna(
+            subset=["MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"],
+            how="all",
+        )
+
         if not mmf_df.empty:
             fig = go.Figure()
             fig.add_trace(
@@ -906,6 +924,8 @@ if show_liquidity:
                 margin=dict(l=30, r=20, t=60, b=30),
             )
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No MMF flow data available for the selected lookback.")
 
 # ============================================================
 # Normalized comparison
