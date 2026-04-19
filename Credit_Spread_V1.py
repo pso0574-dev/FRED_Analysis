@@ -933,7 +933,8 @@ if show_liquidity:
             st.info("No MMF flow data available for the selected lookback.")
 
     # Normalized liquidity comparison
-    st.subheader("Normalized Liquidity Components")
+    st.subheader("Normalized Liquidity Components (Log Scale)")
+
     liq_norm_cols = ["FED_BALANCE_SHEET", "RRP", "TGA", "MMF_RETAIL"]
     liq_norm_df = df[["date"] + liq_norm_cols].dropna(how="all")
 
@@ -941,7 +942,8 @@ if show_liquidity:
         fig = make_normalized_chart(
             liq_norm_df,
             columns=liq_norm_cols,
-            title="Normalized Liquidity Components",
+            title="Normalized Liquidity Components (Log Scale)",
+            use_log_y=True,
         )
         st.plotly_chart(fig, use_container_width=True)
 
