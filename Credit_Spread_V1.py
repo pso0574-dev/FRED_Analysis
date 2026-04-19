@@ -544,28 +544,58 @@ def make_bar_line_chart(df: pd.DataFrame, bar_col: str, line_col: str, title: st
     return fig
 
 
-def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str):
+def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str, use_log_y: bool = False):
     fig = go.Figure()
+
+    color_map = {
+        "FED_BALANCE_SHEET": "#4FC3F7",  # light blue
+        "RRP": "#1E88E5",                # blue
+        "TGA": "#FFB74D",                # orange
+        "MMF_RETAIL": "#EF5350",         # red
+        "NET_LIQUIDITY_PROXY": "#66BB6A",# green
+        "HY_OAS": "#AB47BC",
+        "BBB_OAS": "#FFA726",
+        "CORP_OAS": "#26C6DA",
+        "FIN_STRESS": "#EC407A",
+    }
+
+    pretty_name = {
+        "FED_BALANCE_SHEET": "Fed Balance Sheet",
+        "RRP": "Reverse Repo",
+        "TGA": "Treasury General Account",
+        "MMF_RETAIL": "Retail Money Market Funds",
+        "NET_LIQUIDITY_PROXY": "Net Liquidity Proxy",
+        "HY_OAS": "US High Yield OAS",
+        "BBB_OAS": "BBB Corporate OAS",
+        "CORP_OAS": "US Corporate OAS",
+        "FIN_STRESS": "Financial Stress Index",
+    }
 
     for col in columns:
         if col not in df.columns:
             continue
-        s = df[col].dropna()
+
+        s = df[["date", col]].dropna().copy()
         if s.empty:
             continue
 
-        base = s.iloc[0]
+        base = s[col].iloc[0]
         if base == 0:
-            normalized = df[col]
-        else:
-            normalized = df[col] / base
+            continue
+
+        s["normalized"] = s[col] / base
 
         fig.add_trace(
             go.Scatter(
-                x=df["date"],
-                y=normalized,
+                x=s["date"],
+                y=s["normalized"],
                 mode="lines",
-                name=col,
+                name=pretty_name.get(col, col),
+                line=dict(
+                    width=3,
+                    color=color_map.get(col, None),
+                ),
+                hovertemplate="%{x|%b %Y}<br>%{y:.2f}x<extra></extra>",
             )
         )
 
@@ -573,9 +603,17 @@ def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str):
         title=title,
         xaxis_title="Date",
         yaxis_title="Normalized (start = 1)",
-        height=450,
+        height=460,
         margin=dict(l=30, r=20, t=60, b=30),
+        legend=dict(
+            orientation="v",
+        ),
+        hovermode="x unified",
     )
+
+    if use_log_y:
+        fig.update_yaxes(type="log")
+
     return fig
 
 # ============================================================
