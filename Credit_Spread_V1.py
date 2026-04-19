@@ -255,13 +255,9 @@ def delta_value(current, previous):
 
 
 def convert_units(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convert only series that are in millions to billions.
-    Keep already-billions series unchanged.
-    """
     out = df.copy()
 
-    # FRED series in millions -> convert to billions
+    # Convert only millions -> billions
     for col in ["FED_BALANCE_SHEET", "TGA"]:
         if col in out.columns:
             out[col] = out[col] / 1000.0
@@ -271,14 +267,9 @@ def convert_units(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_sparse_safe_derived_series(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Compute derived series using non-null aligned observations only.
-    This avoids outer-merge NaN gaps breaking diff() calculations.
-    """
     out = df.copy()
     out = out.sort_values("date").reset_index(drop=True)
 
-    # Net Liquidity Proxy
     if all(c in out.columns for c in ["FED_BALANCE_SHEET", "TGA", "RRP"]):
         net_df = out[["date", "FED_BALANCE_SHEET", "TGA", "RRP"]].dropna().copy()
         if not net_df.empty:
@@ -293,7 +284,6 @@ def add_sparse_safe_derived_series(df: pd.DataFrame) -> pd.DataFrame:
                 how="left",
             )
 
-    # MMF flow proxy
     if "MMF_RETAIL" in out.columns:
         mmf = out[["date", "MMF_RETAIL"]].dropna().copy()
         if not mmf.empty:
@@ -854,32 +844,62 @@ if not curve_chart_df.empty:
 if show_liquidity:
     st.subheader("Liquidity Charts")
 
-    # Main liquidity stocks
-    liq_base_cols = ["FED_BALANCE_SHEET", "RRP", "TGA", "MMF_RETAIL"]
-    liq_df = df[["date"] + liq_base_cols].dropna(how="all")
+    # Dual-axis Liquidity Components
+    liq_df = df[["date", "FED_BALANCE_SHEET", "RRP", "TGA", "MMF_RETAIL"]].dropna(how="all")
 
     if not liq_df.empty:
         fig = go.Figure()
-        for col in liq_base_cols:
+
+        for col, label in [
+            ("RRP", "Reverse Repo"),
+            ("TGA", "Treasury General Account"),
+            ("MMF_RETAIL", "Retail Money Market Funds"),
+        ]:
             if col in liq_df.columns:
                 fig.add_trace(
                     go.Scatter(
                         x=liq_df["date"],
                         y=liq_df[col],
                         mode="lines",
-                        name=SERIES_META[col]["name"],
+                        name=label,
+                        yaxis="y",
                     )
                 )
+
+        if "FED_BALANCE_SHEET" in liq_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=liq_df["date"],
+                    y=liq_df["FED_BALANCE_SHEET"],
+                    mode="lines",
+                    name="Fed Balance Sheet",
+                    yaxis="y2",
+                )
+            )
+
         fig.update_layout(
             title="Liquidity Components",
-            xaxis_title="Date",
-            yaxis_title="USD bn",
+            xaxis=dict(title="Date"),
+            yaxis=dict(
+                title="RRP / TGA / MMF (USD bn)",
+                side="left",
+                showgrid=True,
+                zeroline=False,
+            ),
+            yaxis2=dict(
+                title="Fed Balance Sheet (USD bn)",
+                overlaying="y",
+                side="right",
+                showgrid=False,
+                zeroline=False,
+            ),
             height=460,
-            margin=dict(l=30, r=20, t=60, b=30),
+            margin=dict(l=30, r=30, t=60, b=30),
+            legend=dict(orientation="v"),
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # Net liquidity proxy
+    # Net Liquidity Proxy
     if "NET_LIQUIDITY_PROXY" in df.columns:
         net_liq_df = df[["date", "NET_LIQUIDITY_PROXY"]].dropna()
         if not net_liq_df.empty:
@@ -891,7 +911,7 @@ if show_liquidity:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    # MMF flow proxy
+    # MMF Flow Proxy
     if all(c in df.columns for c in ["MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]):
         mmf_df = df[["date", "MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]].dropna(
             subset=["MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"],
