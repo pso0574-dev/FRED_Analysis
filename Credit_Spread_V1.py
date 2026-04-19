@@ -33,7 +33,6 @@ SERIES_META = {
         "name": "US High Yield OAS",
         "category": "Credit",
         "unit": "%",
-        "good_direction": "down",
         "description": "High yield corporate bond spread. Sensitive risk appetite indicator.",
     },
     "BBB_OAS": {
@@ -41,7 +40,6 @@ SERIES_META = {
         "name": "BBB Corporate OAS",
         "category": "Credit",
         "unit": "%",
-        "good_direction": "down",
         "description": "BBB corporate bond spread. Shows stress in lower investment grade credit.",
     },
     "CORP_OAS": {
@@ -49,7 +47,6 @@ SERIES_META = {
         "name": "US Corporate OAS",
         "category": "Credit",
         "unit": "%",
-        "good_direction": "down",
         "description": "Broad US corporate bond spread.",
     },
     "FIN_STRESS": {
@@ -57,7 +54,6 @@ SERIES_META = {
         "name": "St. Louis Fed Financial Stress Index",
         "category": "Financial Conditions",
         "unit": "index",
-        "good_direction": "down",
         "description": "Measures stress across the US financial system.",
     },
 
@@ -67,7 +63,6 @@ SERIES_META = {
         "name": "US 10Y Treasury Yield",
         "category": "Rates",
         "unit": "%",
-        "good_direction": "neutral",
         "description": "US 10-year Treasury yield.",
     },
     "US2Y": {
@@ -75,7 +70,6 @@ SERIES_META = {
         "name": "US 2Y Treasury Yield",
         "category": "Rates",
         "unit": "%",
-        "good_direction": "neutral",
         "description": "US 2-year Treasury yield.",
     },
     "US3M": {
@@ -83,7 +77,6 @@ SERIES_META = {
         "name": "US 3M Treasury Yield",
         "category": "Rates",
         "unit": "%",
-        "good_direction": "neutral",
         "description": "US 3-month Treasury yield.",
     },
     "SPREAD_10Y2Y": {
@@ -91,7 +84,6 @@ SERIES_META = {
         "name": "10Y - 2Y Treasury Spread",
         "category": "Yield Curve",
         "unit": "%p",
-        "good_direction": "up",
         "description": "10-year minus 2-year Treasury spread.",
     },
     "SPREAD_10Y3M": {
@@ -99,7 +91,6 @@ SERIES_META = {
         "name": "10Y - 3M Treasury Spread",
         "category": "Yield Curve",
         "unit": "%p",
-        "good_direction": "up",
         "description": "10-year minus 3-month Treasury spread.",
     },
 
@@ -109,7 +100,6 @@ SERIES_META = {
         "name": "Fed Balance Sheet",
         "category": "Liquidity",
         "unit": "USD bn",
-        "good_direction": "up",
         "description": "Federal Reserve total assets.",
     },
     "RRP": {
@@ -117,7 +107,6 @@ SERIES_META = {
         "name": "Reverse Repo",
         "category": "Liquidity",
         "unit": "USD bn",
-        "good_direction": "down",
         "description": "Overnight Reverse Repo usage.",
     },
     "TGA": {
@@ -125,7 +114,6 @@ SERIES_META = {
         "name": "Treasury General Account",
         "category": "Liquidity",
         "unit": "USD bn",
-        "good_direction": "down",
         "description": "Treasury cash balance at the Fed.",
     },
     "MMF_RETAIL": {
@@ -133,7 +121,6 @@ SERIES_META = {
         "name": "Retail Money Market Funds",
         "category": "Liquidity",
         "unit": "USD bn",
-        "good_direction": "neutral",
         "description": "Retail money market fund assets.",
     },
 }
@@ -257,7 +244,7 @@ def delta_value(current, previous):
 def convert_units(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
-    # Convert only millions -> billions
+    # Only millions -> billions
     for col in ["FED_BALANCE_SHEET", "TGA"]:
         if col in out.columns:
             out[col] = out[col] / 1000.0
@@ -267,8 +254,7 @@ def convert_units(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_sparse_safe_derived_series(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out = out.sort_values("date").reset_index(drop=True)
+    out = df.copy().sort_values("date").reset_index(drop=True)
 
     if all(c in out.columns for c in ["FED_BALANCE_SHEET", "TGA", "RRP"]):
         net_df = out[["date", "FED_BALANCE_SHEET", "TGA", "RRP"]].dropna().copy()
@@ -277,7 +263,6 @@ def add_sparse_safe_derived_series(df: pd.DataFrame) -> pd.DataFrame:
                 net_df["FED_BALANCE_SHEET"] - net_df["TGA"] - net_df["RRP"]
             )
             net_df["NET_LIQUIDITY_4W_CHANGE"] = net_df["NET_LIQUIDITY_PROXY"].diff(4)
-
             out = out.merge(
                 net_df[["date", "NET_LIQUIDITY_PROXY", "NET_LIQUIDITY_4W_CHANGE"]],
                 on="date",
@@ -289,7 +274,6 @@ def add_sparse_safe_derived_series(df: pd.DataFrame) -> pd.DataFrame:
         if not mmf.empty:
             mmf["MMF_FLOW_PROXY"] = mmf["MMF_RETAIL"].diff()
             mmf["MMF_FLOW_PROXY_4W_MA"] = mmf["MMF_FLOW_PROXY"].rolling(4).mean()
-
             out = out.merge(
                 mmf[["date", "MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]],
                 on="date",
@@ -532,6 +516,34 @@ def make_line_chart(df: pd.DataFrame, y_col: str, title: str, y_label: str):
     return fig
 
 
+def make_bar_line_chart(df: pd.DataFrame, bar_col: str, line_col: str, title: str, y_label: str):
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=df["date"],
+            y=df[bar_col],
+            name=bar_col,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df[line_col],
+            mode="lines",
+            name=line_col,
+        )
+    )
+    fig.add_hline(y=0, line_dash="dash")
+    fig.update_layout(
+        title=title,
+        xaxis_title="Date",
+        yaxis_title=y_label,
+        height=420,
+        margin=dict(l=30, r=20, t=60, b=30),
+    )
+    return fig
+
+
 def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str):
     fig = go.Figure()
 
@@ -565,7 +577,6 @@ def make_normalized_chart(df: pd.DataFrame, columns: list[str], title: str):
         margin=dict(l=30, r=20, t=60, b=30),
     )
     return fig
-
 
 # ============================================================
 # Sidebar
@@ -637,12 +648,8 @@ with col2:
         label = get_signal_label(key, value)
         quick_lines.append(f"- **{SERIES_META[key]['name']}**: {label}")
 
-    liquidity_change_label = classify_liquidity_delta(latest.get("NET_LIQUIDITY_4W_CHANGE"))
-    quick_lines.append(f"- **Net Liquidity 4W Change**: {liquidity_change_label}")
-
-    mmf_flow_label = classify_liquidity_delta(latest.get("MMF_FLOW_PROXY_4W_MA"))
-    quick_lines.append(f"- **MMF Flow 4W MA**: {mmf_flow_label}")
-
+    quick_lines.append(f"- **Net Liquidity 4W Change**: {classify_liquidity_delta(latest.get('NET_LIQUIDITY_4W_CHANGE'))}")
+    quick_lines.append(f"- **MMF Flow 4W MA**: {classify_liquidity_delta(latest.get('MMF_FLOW_PROXY_4W_MA'))}")
     st.markdown("\n".join(quick_lines))
 
 # ============================================================
@@ -660,8 +667,8 @@ for i, key in enumerate(metric_keys):
     unit = SERIES_META[key]["unit"]
     label = get_signal_label(key, current)
 
-    delta_text = None if delta is None else f"{delta:+.2f} {unit}"
     value_text = "N/A" if current is None else f"{current:.2f} {unit}"
+    delta_text = None if delta is None else f"{delta:+.2f} {unit}"
 
     metric_cols[i].metric(
         label=SERIES_META[key]["name"],
@@ -677,7 +684,6 @@ if show_liquidity:
     st.subheader("Liquidity Snapshot")
 
     liq_metric_cols = st.columns(6)
-
     liquidity_metric_config = [
         ("FED_BALANCE_SHEET", "Fed Balance Sheet"),
         ("RRP", "Reverse Repo"),
@@ -774,16 +780,14 @@ for key in metric_keys:
     if key not in df.columns:
         continue
     chart_df = df[["date", key]].dropna()
-    if chart_df.empty:
-        continue
-
-    fig = make_line_chart(
-        chart_df,
-        y_col=key,
-        title=f"{SERIES_META[key]['name']} ({SERIES_META[key]['ticker']})",
-        y_label=SERIES_META[key]["unit"],
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    if not chart_df.empty:
+        fig = make_line_chart(
+            chart_df,
+            y_col=key,
+            title=f"{SERIES_META[key]['name']} ({SERIES_META[key]['ticker']})",
+            y_label=SERIES_META[key]["unit"],
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
 # Treasury rates chart
@@ -844,114 +848,70 @@ if not curve_chart_df.empty:
 if show_liquidity:
     st.subheader("Liquidity Charts")
 
-    # Dual-axis Liquidity Components
-    liq_df = df[["date", "FED_BALANCE_SHEET", "RRP", "TGA", "MMF_RETAIL"]].dropna(how="all")
+    # Individual liquidity charts
+    liquidity_single_chart_order = [
+        "FED_BALANCE_SHEET",
+        "RRP",
+        "TGA",
+        "MMF_RETAIL",
+        "NET_LIQUIDITY_PROXY",
+    ]
 
-    if not liq_df.empty:
-        fig = go.Figure()
+    for key in liquidity_single_chart_order:
+        if key in df.columns:
+            chart_df = df[["date", key]].dropna()
+            if not chart_df.empty:
+                y_label = "USD bn"
+                chart_title = key if key not in SERIES_META else f"{SERIES_META[key]['name']}"
+                if key in SERIES_META:
+                    chart_title = f"{SERIES_META[key]['name']} ({SERIES_META[key]['ticker']})"
+                elif key == "NET_LIQUIDITY_PROXY":
+                    chart_title = "Net Liquidity Proxy (Fed Balance Sheet - TGA - RRP)"
 
-        for col, label in [
-            ("RRP", "Reverse Repo"),
-            ("TGA", "Treasury General Account"),
-            ("MMF_RETAIL", "Retail Money Market Funds"),
-        ]:
-            if col in liq_df.columns:
-                fig.add_trace(
-                    go.Scatter(
-                        x=liq_df["date"],
-                        y=liq_df[col],
-                        mode="lines",
-                        name=label,
-                        yaxis="y",
-                    )
+                fig = make_line_chart(
+                    chart_df,
+                    y_col=key,
+                    title=chart_title,
+                    y_label=y_label,
                 )
+                st.plotly_chart(fig, use_container_width=True)
 
-        if "FED_BALANCE_SHEET" in liq_df.columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=liq_df["date"],
-                    y=liq_df["FED_BALANCE_SHEET"],
-                    mode="lines",
-                    name="Fed Balance Sheet",
-                    yaxis="y2",
-                )
-            )
-
-        fig.update_layout(
-            title="Liquidity Components",
-            xaxis=dict(title="Date"),
-            yaxis=dict(
-                title="RRP / TGA / MMF (USD bn)",
-                side="left",
-                showgrid=True,
-                zeroline=False,
-            ),
-            yaxis2=dict(
-                title="Fed Balance Sheet (USD bn)",
-                overlaying="y",
-                side="right",
-                showgrid=False,
-                zeroline=False,
-            ),
-            height=460,
-            margin=dict(l=30, r=30, t=60, b=30),
-            legend=dict(orientation="v"),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Net Liquidity Proxy
-    if "NET_LIQUIDITY_PROXY" in df.columns:
-        net_liq_df = df[["date", "NET_LIQUIDITY_PROXY"]].dropna()
-        if not net_liq_df.empty:
-            fig = make_line_chart(
-                net_liq_df,
-                y_col="NET_LIQUIDITY_PROXY",
-                title="Net Liquidity Proxy (Fed Balance Sheet - TGA - RRP)",
-                y_label="USD bn",
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-    # MMF Flow Proxy
+    # MMF flow proxy chart
     if all(c in df.columns for c in ["MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]):
         mmf_df = df[["date", "MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"]].dropna(
             subset=["MMF_FLOW_PROXY", "MMF_FLOW_PROXY_4W_MA"],
             how="all",
         )
-
         if not mmf_df.empty:
-            fig = go.Figure()
-            fig.add_trace(
-                go.Bar(
-                    x=mmf_df["date"],
-                    y=mmf_df["MMF_FLOW_PROXY"],
-                    name="MMF Weekly Flow Proxy",
-                )
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=mmf_df["date"],
-                    y=mmf_df["MMF_FLOW_PROXY_4W_MA"],
-                    mode="lines",
-                    name="MMF Flow Proxy 4W MA",
-                )
-            )
-            fig.add_hline(y=0, line_dash="dash")
-            fig.update_layout(
+            fig = make_bar_line_chart(
+                mmf_df,
+                bar_col="MMF_FLOW_PROXY",
+                line_col="MMF_FLOW_PROXY_4W_MA",
                 title="Money Market Fund Flow Proxy",
-                xaxis_title="Date",
-                yaxis_title="USD bn",
-                height=460,
-                margin=dict(l=30, r=20, t=60, b=30),
+                y_label="USD bn",
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No MMF flow data available for the selected lookback.")
 
+    # Normalized liquidity comparison
+    st.subheader("Normalized Liquidity Components")
+    liq_norm_cols = ["FED_BALANCE_SHEET", "RRP", "TGA", "MMF_RETAIL"]
+    liq_norm_df = df[["date"] + liq_norm_cols].dropna(how="all")
+
+    if not liq_norm_df.empty:
+        fig = make_normalized_chart(
+            liq_norm_df,
+            columns=liq_norm_cols,
+            title="Normalized Liquidity Components",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
 # ============================================================
 # Normalized comparison
 # ============================================================
 if show_normalized:
-    st.subheader("Normalized Comparison")
+    st.subheader("Normalized Credit / Stress / Liquidity Comparison")
 
     norm_cols = ["HY_OAS", "BBB_OAS", "CORP_OAS", "FIN_STRESS"]
     if show_liquidity and "NET_LIQUIDITY_PROXY" in df.columns:
