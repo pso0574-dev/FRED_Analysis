@@ -3,17 +3,16 @@
 # SCHD Dividend -> QQQ/SPY DCA Simulator
 # Full English-based code
 #
-# Features
-# - Adjustable SCHD initial amount in KRW
-# - USD conversion via editable FX rate
-# - SCHD monthly / quarterly dividend simulation
-# - Tax-adjusted dividend cash flow
-# - QQQ / SPY allocation slider
-# - 10Y / 20Y / 30Y horizon comparison
-# - Separate Dashboard / Charts / Tables tabs
-# - Dual-axis charts (USD left / KRW right)
-# - Plot titles placed outside charts to avoid overlap
-# - Related table below each chart
+# Main update in this version
+# - KRW is displayed in units of 100 million KRW ("Eok KRW")
+#   Example:
+#       1.00 = KRW 100,000,000
+#       0.50 = KRW 50,000,000
+# - Quick View uses USD on left axis
+# - Right axis uses Eok KRW (100M KRW units)
+# - No fake negative KRW axis in Quick View
+# - Plot titles are outside the chart to avoid overlap
+# - Each plot has its own related table below it
 #
 # Run:
 #   streamlit run streamlit_app.py
@@ -48,6 +47,11 @@ st.caption(
     "Plan SCHD dividend cash flow, cumulative contributions, and long-term "
     "QQQ / SPY compounding with adjustable assumptions."
 )
+
+# ============================================================
+# Constants
+# ============================================================
+EOK_KRW = 100_000_000  # 1 Eok KRW = 100 million KRW
 
 # ============================================================
 # Data class
@@ -86,11 +90,21 @@ def usd_to_krw(usd: float, fx_rate: float) -> float:
     return usd * fx_rate
 
 
+def krw_to_eok(krw: float) -> float:
+    return krw / EOK_KRW
+
+
+def usd_to_eok_krw(usd: float, fx_rate: float) -> float:
+    return krw_to_eok(usd_to_krw(usd, fx_rate))
+
+
 def format_currency(value: float, currency: str = "USD") -> str:
     if currency == "USD":
         return f"${value:,.2f}"
     if currency == "KRW":
         return f"₩{value:,.0f}"
+    if currency == "EOK":
+        return f"{value:,.3f} 억 KRW"
     return f"{value:,.2f}"
 
 
@@ -147,39 +161,73 @@ def build_simulation_dataframe(inputs: SimulationInputs) -> pd.DataFrame:
             {
                 "Month": month,
                 "Year": math.ceil(month / 12),
+
                 "Initial Principal (KRW)": inputs.initial_krw,
                 "Initial Principal (USD)": initial_usd,
+                "Initial Principal (Eok KRW)": krw_to_eok(inputs.initial_krw),
+
                 "SCHD Annual Yield (%)": effective_annual_yield * 100,
+
                 "Gross Dividend (USD)": gross_dividend_usd,
                 "Gross Dividend (KRW)": usd_to_krw(gross_dividend_usd, inputs.fx_rate),
+                "Gross Dividend (Eok KRW)": usd_to_eok_krw(gross_dividend_usd, inputs.fx_rate),
+
                 "Tax (USD)": tax_usd,
                 "Tax (KRW)": usd_to_krw(tax_usd, inputs.fx_rate),
+                "Tax (Eok KRW)": usd_to_eok_krw(tax_usd, inputs.fx_rate),
+
                 "Net Dividend (USD)": net_dividend_usd,
                 "Net Dividend (KRW)": usd_to_krw(net_dividend_usd, inputs.fx_rate),
+                "Net Dividend (Eok KRW)": usd_to_eok_krw(net_dividend_usd, inputs.fx_rate),
+
                 "Cumulative Gross Dividend (USD)": cumulative_gross_dividend,
                 "Cumulative Gross Dividend (KRW)": usd_to_krw(cumulative_gross_dividend, inputs.fx_rate),
+                "Cumulative Gross Dividend (Eok KRW)": usd_to_eok_krw(cumulative_gross_dividend, inputs.fx_rate),
+
                 "Cumulative Tax (USD)": cumulative_tax,
                 "Cumulative Tax (KRW)": usd_to_krw(cumulative_tax, inputs.fx_rate),
+                "Cumulative Tax (Eok KRW)": usd_to_eok_krw(cumulative_tax, inputs.fx_rate),
+
                 "Cumulative Net Dividend (USD)": cumulative_net_dividend,
                 "Cumulative Net Dividend (KRW)": usd_to_krw(cumulative_net_dividend, inputs.fx_rate),
+                "Cumulative Net Dividend (Eok KRW)": usd_to_eok_krw(cumulative_net_dividend, inputs.fx_rate),
+
                 "QQQ Contribution (USD)": qqq_contribution,
                 "QQQ Contribution (KRW)": usd_to_krw(qqq_contribution, inputs.fx_rate),
+                "QQQ Contribution (Eok KRW)": usd_to_eok_krw(qqq_contribution, inputs.fx_rate),
+
                 "SPY Contribution (USD)": spy_contribution,
                 "SPY Contribution (KRW)": usd_to_krw(spy_contribution, inputs.fx_rate),
+                "SPY Contribution (Eok KRW)": usd_to_eok_krw(spy_contribution, inputs.fx_rate),
+
                 "Cumulative QQQ Contribution (USD)": cumulative_qqq_contribution,
                 "Cumulative QQQ Contribution (KRW)": usd_to_krw(cumulative_qqq_contribution, inputs.fx_rate),
+                "Cumulative QQQ Contribution (Eok KRW)": usd_to_eok_krw(cumulative_qqq_contribution, inputs.fx_rate),
+
                 "Cumulative SPY Contribution (USD)": cumulative_spy_contribution,
                 "Cumulative SPY Contribution (KRW)": usd_to_krw(cumulative_spy_contribution, inputs.fx_rate),
+                "Cumulative SPY Contribution (Eok KRW)": usd_to_eok_krw(cumulative_spy_contribution, inputs.fx_rate),
+
                 "QQQ Value (USD)": qqq_value,
                 "QQQ Value (KRW)": usd_to_krw(qqq_value, inputs.fx_rate),
+                "QQQ Value (Eok KRW)": usd_to_eok_krw(qqq_value, inputs.fx_rate),
+
                 "SPY Value (USD)": spy_value,
                 "SPY Value (KRW)": usd_to_krw(spy_value, inputs.fx_rate),
+                "SPY Value (Eok KRW)": usd_to_eok_krw(spy_value, inputs.fx_rate),
+
                 "Total Portfolio Value (USD)": total_portfolio_value,
                 "Total Portfolio Value (KRW)": usd_to_krw(total_portfolio_value, inputs.fx_rate),
+                "Total Portfolio Value (Eok KRW)": usd_to_eok_krw(total_portfolio_value, inputs.fx_rate),
+
                 "Total Contribution (USD)": total_contribution,
                 "Total Contribution (KRW)": usd_to_krw(total_contribution, inputs.fx_rate),
+                "Total Contribution (Eok KRW)": usd_to_eok_krw(total_contribution, inputs.fx_rate),
+
                 "Total Gain (USD)": total_gain,
                 "Total Gain (KRW)": usd_to_krw(total_gain, inputs.fx_rate),
+                "Total Gain (Eok KRW)": usd_to_eok_krw(total_gain, inputs.fx_rate),
+
                 "Total Return (%)": total_return_pct,
             }
         )
@@ -188,11 +236,16 @@ def build_simulation_dataframe(inputs: SimulationInputs) -> pd.DataFrame:
 
     df["Total Monthly Contribution (USD)"] = df["QQQ Contribution (USD)"] + df["SPY Contribution (USD)"]
     df["Total Monthly Contribution (KRW)"] = df["QQQ Contribution (KRW)"] + df["SPY Contribution (KRW)"]
+    df["Total Monthly Contribution (Eok KRW)"] = df["QQQ Contribution (Eok KRW)"] + df["SPY Contribution (Eok KRW)"]
+
     df["Total Cumulative Contribution (USD)"] = (
         df["Cumulative QQQ Contribution (USD)"] + df["Cumulative SPY Contribution (USD)"]
     )
     df["Total Cumulative Contribution (KRW)"] = (
         df["Cumulative QQQ Contribution (KRW)"] + df["Cumulative SPY Contribution (KRW)"]
+    )
+    df["Total Cumulative Contribution (Eok KRW)"] = (
+        df["Cumulative QQQ Contribution (Eok KRW)"] + df["Cumulative SPY Contribution (Eok KRW)"]
     )
 
     return df
@@ -205,17 +258,22 @@ def build_summary_metrics(df: pd.DataFrame) -> Dict[str, float]:
     return {
         "initial_principal_usd": float(df["Initial Principal (USD)"].iloc[0]),
         "initial_principal_krw": float(df["Initial Principal (KRW)"].iloc[0]),
-        "first_year_gross_dividend_usd": float(first_year["Gross Dividend (USD)"].sum()),
+        "initial_principal_eok": float(df["Initial Principal (Eok KRW)"].iloc[0]),
         "first_year_net_dividend_usd": float(first_year["Net Dividend (USD)"].sum()),
         "first_year_net_dividend_krw": float(first_year["Net Dividend (KRW)"].sum()),
+        "first_year_net_dividend_eok": float(first_year["Net Dividend (Eok KRW)"].sum()),
         "monthly_avg_net_dividend_usd": float(first_year["Net Dividend (USD)"].mean()),
         "monthly_avg_net_dividend_krw": float(first_year["Net Dividend (KRW)"].mean()),
+        "monthly_avg_net_dividend_eok": float(first_year["Net Dividend (Eok KRW)"].mean()),
         "final_cumulative_net_dividend_usd": float(last_row["Cumulative Net Dividend (USD)"]),
         "final_cumulative_net_dividend_krw": float(last_row["Cumulative Net Dividend (KRW)"]),
+        "final_cumulative_net_dividend_eok": float(last_row["Cumulative Net Dividend (Eok KRW)"]),
         "final_portfolio_value_usd": float(last_row["Total Portfolio Value (USD)"]),
         "final_portfolio_value_krw": float(last_row["Total Portfolio Value (KRW)"]),
+        "final_portfolio_value_eok": float(last_row["Total Portfolio Value (Eok KRW)"]),
         "final_total_gain_usd": float(last_row["Total Gain (USD)"]),
         "final_total_gain_krw": float(last_row["Total Gain (KRW)"]),
+        "final_total_gain_eok": float(last_row["Total Gain (Eok KRW)"]),
         "final_total_return_pct": float(last_row["Total Return (%)"]),
     }
 
@@ -248,17 +306,17 @@ def build_horizon_comparison(
             {
                 "Horizon (Years)": horizon,
                 "Cumulative Net Dividend (USD)": last_row["Cumulative Net Dividend (USD)"],
-                "Cumulative Net Dividend (KRW)": last_row["Cumulative Net Dividend (KRW)"],
+                "Cumulative Net Dividend (Eok KRW)": last_row["Cumulative Net Dividend (Eok KRW)"],
                 "Total Contribution (USD)": last_row["Total Contribution (USD)"],
-                "Total Contribution (KRW)": last_row["Total Contribution (KRW)"],
+                "Total Contribution (Eok KRW)": last_row["Total Contribution (Eok KRW)"],
                 "QQQ Value (USD)": last_row["QQQ Value (USD)"],
-                "QQQ Value (KRW)": last_row["QQQ Value (KRW)"],
+                "QQQ Value (Eok KRW)": last_row["QQQ Value (Eok KRW)"],
                 "SPY Value (USD)": last_row["SPY Value (USD)"],
-                "SPY Value (KRW)": last_row["SPY Value (KRW)"],
+                "SPY Value (Eok KRW)": last_row["SPY Value (Eok KRW)"],
                 "Total Portfolio Value (USD)": last_row["Total Portfolio Value (USD)"],
-                "Total Portfolio Value (KRW)": last_row["Total Portfolio Value (KRW)"],
+                "Total Portfolio Value (Eok KRW)": last_row["Total Portfolio Value (Eok KRW)"],
                 "Total Gain (USD)": last_row["Total Gain (USD)"],
-                "Total Gain (KRW)": last_row["Total Gain (KRW)"],
+                "Total Gain (Eok KRW)": last_row["Total Gain (Eok KRW)"],
                 "Total Return (%)": last_row["Total Return (%)"],
             }
         )
@@ -277,9 +335,9 @@ def prepare_plot_related_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
             "Month",
             "Year",
             "Net Dividend (USD)",
-            "Net Dividend (KRW)",
+            "Net Dividend (Eok KRW)",
             "Cumulative Net Dividend (USD)",
-            "Cumulative Net Dividend (KRW)",
+            "Cumulative Net Dividend (Eok KRW)",
         ]
     ].copy()
 
@@ -288,9 +346,9 @@ def prepare_plot_related_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
             "Month",
             "Year",
             "Total Monthly Contribution (USD)",
-            "Total Monthly Contribution (KRW)",
+            "Total Monthly Contribution (Eok KRW)",
             "Total Cumulative Contribution (USD)",
-            "Total Cumulative Contribution (KRW)",
+            "Total Cumulative Contribution (Eok KRW)",
         ]
     ].copy()
 
@@ -299,9 +357,9 @@ def prepare_plot_related_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
             "Month",
             "Year",
             "QQQ Contribution (USD)",
-            "QQQ Contribution (KRW)",
+            "QQQ Contribution (Eok KRW)",
             "Cumulative QQQ Contribution (USD)",
-            "Cumulative QQQ Contribution (KRW)",
+            "Cumulative QQQ Contribution (Eok KRW)",
         ]
     ].copy()
 
@@ -310,9 +368,9 @@ def prepare_plot_related_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
             "Month",
             "Year",
             "SPY Contribution (USD)",
-            "SPY Contribution (KRW)",
+            "SPY Contribution (Eok KRW)",
             "Cumulative SPY Contribution (USD)",
-            "Cumulative SPY Contribution (KRW)",
+            "Cumulative SPY Contribution (Eok KRW)",
         ]
     ].copy()
 
@@ -321,22 +379,22 @@ def prepare_plot_related_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
             "Month",
             "Year",
             "QQQ Value (USD)",
-            "QQQ Value (KRW)",
+            "QQQ Value (Eok KRW)",
             "SPY Value (USD)",
-            "SPY Value (KRW)",
+            "SPY Value (Eok KRW)",
             "Total Portfolio Value (USD)",
-            "Total Portfolio Value (KRW)",
+            "Total Portfolio Value (Eok KRW)",
             "Total Contribution (USD)",
-            "Total Contribution (KRW)",
+            "Total Contribution (Eok KRW)",
             "Total Gain (USD)",
-            "Total Gain (KRW)",
+            "Total Gain (Eok KRW)",
             "Total Return (%)",
         ]
     ].copy()
 
     for tdf in [dividend_table, contribution_table, qqq_table, spy_table, growth_table]:
         numeric_cols = tdf.select_dtypes(include=[np.number]).columns
-        tdf[numeric_cols] = tdf[numeric_cols].round(2)
+        tdf[numeric_cols] = tdf[numeric_cols].round(4)
 
     return {
         "dividend": dividend_table,
@@ -369,12 +427,13 @@ def make_monthly_bar_line_dual_axis_chart(
     x_col: str,
     bar_usd_col: str,
     line_usd_col: str,
-    bar_krw_col: str,
-    line_krw_col: str,
+    bar_eok_col: str,
+    line_eok_col: str,
     title: Optional[str] = None,
     left_title: str = "USD",
-    right_title: str = "KRW",
+    right_title: str = "Eok KRW (₩100M units)",
     show_legend: bool = True,
+    show_eok_by_default: bool = False,
 ) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
@@ -399,13 +458,15 @@ def make_monthly_bar_line_dual_axis_chart(
         secondary_y=False,
     )
 
+    eok_visibility = True if show_eok_by_default else "legendonly"
+
     fig.add_trace(
         go.Bar(
             x=df[x_col],
-            y=df[bar_krw_col],
-            name=bar_krw_col,
+            y=df[bar_eok_col],
+            name=bar_eok_col,
             opacity=0.22,
-            visible="legendonly",
+            visible=eok_visibility,
         ),
         secondary_y=True,
     )
@@ -413,11 +474,11 @@ def make_monthly_bar_line_dual_axis_chart(
     fig.add_trace(
         go.Scatter(
             x=df[x_col],
-            y=df[line_krw_col],
+            y=df[line_eok_col],
             mode="lines",
-            name=line_krw_col,
+            name=line_eok_col,
             line=dict(width=2, dash="dot"),
-            visible="legendonly",
+            visible=eok_visibility,
         ),
         secondary_y=True,
     )
@@ -428,7 +489,7 @@ def make_monthly_bar_line_dual_axis_chart(
         template="plotly_white",
         barmode="overlay",
         showlegend=show_legend,
-        margin=dict(l=60, r=70, t=25 if title is None else 80, b=50),
+        margin=dict(l=60, r=80, t=25 if title is None else 80, b=50),
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -441,7 +502,23 @@ def make_monthly_bar_line_dual_axis_chart(
 
     fig.update_xaxes(title_text="Month")
     fig.update_yaxes(title_text=left_title, secondary_y=False)
-    fig.update_yaxes(title_text=right_title, secondary_y=True)
+
+    if show_eok_by_default:
+        eok_max = max(df[bar_eok_col].max(), df[line_eok_col].max()) if len(df) > 0 else 0
+        fig.update_yaxes(
+            title_text=right_title,
+            secondary_y=True,
+            visible=True,
+            range=[0, eok_max * 1.05 if eok_max > 0 else 1],
+        )
+    else:
+        fig.update_yaxes(
+            title_text=right_title,
+            secondary_y=True,
+            visible=False,
+            showticklabels=False,
+            showgrid=False,
+        )
 
     return fig
 
@@ -450,6 +527,7 @@ def make_dual_axis_growth_chart(
     df: pd.DataFrame,
     title: Optional[str] = None,
     show_legend: bool = True,
+    show_eok_by_default: bool = True,
 ) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
@@ -484,14 +562,16 @@ def make_dual_axis_growth_chart(
         secondary_y=False,
     )
 
+    eok_visibility = True if show_eok_by_default else "legendonly"
+
     fig.add_trace(
         go.Scatter(
             x=df["Month"],
-            y=df["Total Portfolio Value (KRW)"],
+            y=df["Total Portfolio Value (Eok KRW)"],
             mode="lines",
-            name="Total Portfolio Value (KRW)",
+            name="Total Portfolio Value (Eok KRW)",
             line=dict(width=2, dash="dot"),
-            visible="legendonly",
+            visible=eok_visibility,
         ),
         secondary_y=True,
     )
@@ -502,7 +582,7 @@ def make_dual_axis_growth_chart(
         template="plotly_white",
         barmode="group",
         showlegend=show_legend,
-        margin=dict(l=60, r=70, t=25 if title is None else 80, b=50),
+        margin=dict(l=60, r=80, t=25 if title is None else 80, b=50),
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -515,7 +595,23 @@ def make_dual_axis_growth_chart(
 
     fig.update_xaxes(title_text="Month")
     fig.update_yaxes(title_text="USD", secondary_y=False)
-    fig.update_yaxes(title_text="KRW", secondary_y=True)
+
+    if show_eok_by_default:
+        eok_max = df["Total Portfolio Value (Eok KRW)"].max() if len(df) > 0 else 0
+        fig.update_yaxes(
+            title_text="Eok KRW (₩100M units)",
+            secondary_y=True,
+            visible=True,
+            range=[0, eok_max * 1.05 if eok_max > 0 else 1],
+        )
+    else:
+        fig.update_yaxes(
+            title_text="Eok KRW (₩100M units)",
+            secondary_y=True,
+            visible=False,
+            showticklabels=False,
+            showgrid=False,
+        )
 
     return fig
 
@@ -524,6 +620,7 @@ def make_horizon_bar_line_dual_axis_chart(
     horizon_df: pd.DataFrame,
     title: Optional[str] = None,
     show_legend: bool = True,
+    show_eok_by_default: bool = True,
 ) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
@@ -558,14 +655,16 @@ def make_horizon_bar_line_dual_axis_chart(
         secondary_y=False,
     )
 
+    eok_visibility = True if show_eok_by_default else "legendonly"
+
     fig.add_trace(
         go.Scatter(
             x=horizon_df["Horizon (Years)"],
-            y=horizon_df["Total Portfolio Value (KRW)"],
+            y=horizon_df["Total Portfolio Value (Eok KRW)"],
             mode="lines+markers",
-            name="Final Value Trend (KRW)",
+            name="Final Value Trend (Eok KRW)",
             line=dict(width=2, dash="dot"),
-            visible="legendonly",
+            visible=eok_visibility,
         ),
         secondary_y=True,
     )
@@ -576,7 +675,7 @@ def make_horizon_bar_line_dual_axis_chart(
         template="plotly_white",
         barmode="group",
         showlegend=show_legend,
-        margin=dict(l=60, r=70, t=25 if title is None else 80, b=50),
+        margin=dict(l=60, r=80, t=25 if title is None else 80, b=50),
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -589,7 +688,23 @@ def make_horizon_bar_line_dual_axis_chart(
 
     fig.update_xaxes(title_text="Horizon (Years)")
     fig.update_yaxes(title_text="USD", secondary_y=False)
-    fig.update_yaxes(title_text="KRW", secondary_y=True)
+
+    if show_eok_by_default:
+        eok_max = horizon_df["Total Portfolio Value (Eok KRW)"].max() if len(horizon_df) > 0 else 0
+        fig.update_yaxes(
+            title_text="Eok KRW (₩100M units)",
+            secondary_y=True,
+            visible=True,
+            range=[0, eok_max * 1.05 if eok_max > 0 else 1],
+        )
+    else:
+        fig.update_yaxes(
+            title_text="Eok KRW (₩100M units)",
+            secondary_y=True,
+            visible=False,
+            showticklabels=False,
+            showgrid=False,
+        )
 
     return fig
 
@@ -699,8 +814,6 @@ horizon_years = st.sidebar.selectbox(
     index=0,
 )
 
-show_usd = st.sidebar.checkbox("Show USD tables", value=True)
-show_krw = st.sidebar.checkbox("Show KRW tables", value=True)
 show_full_table = st.sidebar.checkbox("Show full monthly tables", value=False)
 
 # ============================================================
@@ -730,7 +843,7 @@ plot_tables = prepare_plot_related_tables(df)
 
 for table_df in [horizon_df]:
     numeric_cols = table_df.select_dtypes(include=[np.number]).columns
-    table_df[numeric_cols] = table_df[numeric_cols].round(2)
+    table_df[numeric_cols] = table_df[numeric_cols].round(4)
 
 # ============================================================
 # Summary metrics
@@ -741,16 +854,16 @@ col1, col2, col3, col4, col5, col6 = st.columns(6)
 
 col1.metric("Initial SCHD (USD)", format_currency(summary["initial_principal_usd"], "USD"))
 col2.metric("Initial SCHD (KRW)", format_currency(summary["initial_principal_krw"], "KRW"))
-col3.metric("1Y Net Dividend (USD)", format_currency(summary["first_year_net_dividend_usd"], "USD"))
-col4.metric("1Y Net Dividend (KRW)", format_currency(summary["first_year_net_dividend_krw"], "KRW"))
-col5.metric(f"{inputs.horizon_years}Y Final Value (USD)", format_currency(summary["final_portfolio_value_usd"], "USD"))
+col3.metric("Initial SCHD (Eok KRW)", format_currency(summary["initial_principal_eok"], "EOK"))
+col4.metric("1Y Net Dividend (USD)", format_currency(summary["first_year_net_dividend_usd"], "USD"))
+col5.metric("1Y Net Dividend (Eok KRW)", format_currency(summary["first_year_net_dividend_eok"], "EOK"))
 col6.metric(f"{inputs.horizon_years}Y Return", f"{summary['final_total_return_pct']:.2f}%")
 
 col7, col8, col9, col10 = st.columns(4)
 col7.metric("Monthly Avg Net Dividend (USD)", format_currency(summary["monthly_avg_net_dividend_usd"], "USD"))
-col8.metric("Monthly Avg Net Dividend (KRW)", format_currency(summary["monthly_avg_net_dividend_krw"], "KRW"))
-col9.metric(f"{inputs.horizon_years}Y Cum. Net Dividend (USD)", format_currency(summary["final_cumulative_net_dividend_usd"], "USD"))
-col10.metric(f"{inputs.horizon_years}Y Final Gain (USD)", format_currency(summary["final_total_gain_usd"], "USD"))
+col8.metric("Monthly Avg Net Dividend (Eok KRW)", format_currency(summary["monthly_avg_net_dividend_eok"], "EOK"))
+col9.metric(f"{inputs.horizon_years}Y Final Value (USD)", format_currency(summary["final_portfolio_value_usd"], "USD"))
+col10.metric(f"{inputs.horizon_years}Y Final Value (Eok KRW)", format_currency(summary["final_portfolio_value_eok"], "EOK"))
 
 # ============================================================
 # Main tables for dedicated table tab
@@ -760,15 +873,16 @@ dividend_table = df[
         "Month",
         "Year",
         "Initial Principal (USD)",
+        "Initial Principal (Eok KRW)",
         "SCHD Annual Yield (%)",
         "Gross Dividend (USD)",
+        "Gross Dividend (Eok KRW)",
         "Tax (USD)",
+        "Tax (Eok KRW)",
         "Net Dividend (USD)",
+        "Net Dividend (Eok KRW)",
         "Cumulative Net Dividend (USD)",
-        "Gross Dividend (KRW)",
-        "Tax (KRW)",
-        "Net Dividend (KRW)",
-        "Cumulative Net Dividend (KRW)",
+        "Cumulative Net Dividend (Eok KRW)",
     ]
 ].copy()
 
@@ -777,19 +891,19 @@ allocation_table = df[
         "Month",
         "Year",
         "Net Dividend (USD)",
-        "Net Dividend (KRW)",
+        "Net Dividend (Eok KRW)",
         "QQQ Contribution (USD)",
-        "QQQ Contribution (KRW)",
+        "QQQ Contribution (Eok KRW)",
         "SPY Contribution (USD)",
-        "SPY Contribution (KRW)",
+        "SPY Contribution (Eok KRW)",
         "Cumulative QQQ Contribution (USD)",
-        "Cumulative QQQ Contribution (KRW)",
+        "Cumulative QQQ Contribution (Eok KRW)",
         "Cumulative SPY Contribution (USD)",
-        "Cumulative SPY Contribution (KRW)",
+        "Cumulative SPY Contribution (Eok KRW)",
         "Total Monthly Contribution (USD)",
-        "Total Monthly Contribution (KRW)",
+        "Total Monthly Contribution (Eok KRW)",
         "Total Cumulative Contribution (USD)",
-        "Total Cumulative Contribution (KRW)",
+        "Total Cumulative Contribution (Eok KRW)",
     ]
 ].copy()
 
@@ -798,26 +912,26 @@ compound_table = df[
         "Month",
         "Year",
         "QQQ Contribution (USD)",
-        "QQQ Contribution (KRW)",
+        "QQQ Contribution (Eok KRW)",
         "SPY Contribution (USD)",
-        "SPY Contribution (KRW)",
+        "SPY Contribution (Eok KRW)",
         "QQQ Value (USD)",
-        "QQQ Value (KRW)",
+        "QQQ Value (Eok KRW)",
         "SPY Value (USD)",
-        "SPY Value (KRW)",
+        "SPY Value (Eok KRW)",
         "Total Portfolio Value (USD)",
-        "Total Portfolio Value (KRW)",
+        "Total Portfolio Value (Eok KRW)",
         "Total Contribution (USD)",
-        "Total Contribution (KRW)",
+        "Total Contribution (Eok KRW)",
         "Total Gain (USD)",
-        "Total Gain (KRW)",
+        "Total Gain (Eok KRW)",
         "Total Return (%)",
     ]
 ].copy()
 
 for table_df in [dividend_table, allocation_table, compound_table]:
     numeric_cols = table_df.select_dtypes(include=[np.number]).columns
-    table_df[numeric_cols] = table_df[numeric_cols].round(2)
+    table_df[numeric_cols] = table_df[numeric_cols].round(4)
 
 # ============================================================
 # Tabs
@@ -845,10 +959,11 @@ with main_tab1:
             x_col="Month",
             bar_usd_col="Net Dividend (USD)",
             line_usd_col="Cumulative Net Dividend (USD)",
-            bar_krw_col="Net Dividend (KRW)",
-            line_krw_col="Cumulative Net Dividend (KRW)",
+            bar_eok_col="Net Dividend (Eok KRW)",
+            line_eok_col="Cumulative Net Dividend (Eok KRW)",
             title=None,
             show_legend=False,
+            show_eok_by_default=True,
         )
         st.plotly_chart(fig1, use_container_width=True)
 
@@ -866,10 +981,11 @@ with main_tab1:
             x_col="Month",
             bar_usd_col="Total Monthly Contribution (USD)",
             line_usd_col="Total Cumulative Contribution (USD)",
-            bar_krw_col="Total Monthly Contribution (KRW)",
-            line_krw_col="Total Cumulative Contribution (KRW)",
+            bar_eok_col="Total Monthly Contribution (Eok KRW)",
+            line_eok_col="Total Cumulative Contribution (Eok KRW)",
             title=None,
             show_legend=False,
+            show_eok_by_default=True,
         )
         st.plotly_chart(fig2, use_container_width=True)
 
@@ -902,10 +1018,11 @@ with main_tab2:
             x_col="Month",
             bar_usd_col="Net Dividend (USD)",
             line_usd_col="Cumulative Net Dividend (USD)",
-            bar_krw_col="Net Dividend (KRW)",
-            line_krw_col="Cumulative Net Dividend (KRW)",
+            bar_eok_col="Net Dividend (Eok KRW)",
+            line_eok_col="Cumulative Net Dividend (Eok KRW)",
             title=None,
             show_legend=True,
+            show_eok_by_default=True,
         )
         st.plotly_chart(fig_dividend, use_container_width=True)
 
@@ -926,10 +1043,11 @@ with main_tab2:
                 x_col="Month",
                 bar_usd_col="QQQ Contribution (USD)",
                 line_usd_col="Cumulative QQQ Contribution (USD)",
-                bar_krw_col="QQQ Contribution (KRW)",
-                line_krw_col="Cumulative QQQ Contribution (KRW)",
+                bar_eok_col="QQQ Contribution (Eok KRW)",
+                line_eok_col="Cumulative QQQ Contribution (Eok KRW)",
                 title=None,
                 show_legend=True,
+                show_eok_by_default=True,
             )
             st.plotly_chart(fig_alloc_qqq, use_container_width=True)
 
@@ -947,10 +1065,11 @@ with main_tab2:
                 x_col="Month",
                 bar_usd_col="SPY Contribution (USD)",
                 line_usd_col="Cumulative SPY Contribution (USD)",
-                bar_krw_col="SPY Contribution (KRW)",
-                line_krw_col="Cumulative SPY Contribution (KRW)",
+                bar_eok_col="SPY Contribution (Eok KRW)",
+                line_eok_col="Cumulative SPY Contribution (Eok KRW)",
                 title=None,
                 show_legend=True,
+                show_eok_by_default=True,
             )
             st.plotly_chart(fig_alloc_spy, use_container_width=True)
 
@@ -967,6 +1086,7 @@ with main_tab2:
             df=df,
             title=None,
             show_legend=True,
+            show_eok_by_default=True,
         )
         st.plotly_chart(fig_growth, use_container_width=True)
 
@@ -983,6 +1103,7 @@ with main_tab2:
             horizon_df=horizon_df,
             title=None,
             show_legend=True,
+            show_eok_by_default=True,
         )
         st.plotly_chart(fig_horizon, use_container_width=True)
 
@@ -1004,39 +1125,10 @@ with main_tab3:
 
     with table_tab1:
         st.markdown("### SCHD Principal and Dividend Table")
-        if show_usd and show_krw:
-            st.dataframe(
-                dividend_table if show_full_table else dividend_table.head(120),
-                use_container_width=True,
-            )
-        elif show_usd:
-            usd_cols = [
-                "Month",
-                "Year",
-                "Initial Principal (USD)",
-                "SCHD Annual Yield (%)",
-                "Gross Dividend (USD)",
-                "Tax (USD)",
-                "Net Dividend (USD)",
-                "Cumulative Net Dividend (USD)",
-            ]
-            st.dataframe(
-                dividend_table[usd_cols] if show_full_table else dividend_table[usd_cols].head(120),
-                use_container_width=True,
-            )
-        elif show_krw:
-            krw_cols = [
-                "Month",
-                "Year",
-                "Gross Dividend (KRW)",
-                "Tax (KRW)",
-                "Net Dividend (KRW)",
-                "Cumulative Net Dividend (KRW)",
-            ]
-            st.dataframe(
-                dividend_table[krw_cols] if show_full_table else dividend_table[krw_cols].head(120),
-                use_container_width=True,
-            )
+        st.dataframe(
+            dividend_table if show_full_table else dividend_table.head(120),
+            use_container_width=True,
+        )
 
     with table_tab2:
         st.markdown("### Dividend Allocation to QQQ / SPY")
@@ -1109,9 +1201,12 @@ with st.expander("Model Notes / Assumptions"):
 - QQQ and SPY are modeled with **monthly compounding** from annual CAGR assumptions.
 - In **Monthly normalized** mode, dividends are spread evenly over 12 months.
 - In **Actual quarterly payout** mode, dividends are paid only in months 3, 6, 9, and 12.
+- KRW is displayed in **Eok KRW** units:
+  - **1.00 = KRW 100,000,000**
+  - **0.10 = KRW 10,000,000**
 - In Quick View, chart titles are displayed **outside** the plots to avoid overlap.
 - Each chart has a related table shown directly below it.
-- USD is displayed on the left axis and KRW on the right axis.
-- Some KRW traces are set to **legend only** by default to reduce clutter.
+- USD is shown on the left axis.
+- Eok KRW is shown on the right axis.
         """
     )
