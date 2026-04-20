@@ -3,18 +3,9 @@
 # SCHD Dividend -> QQQ / SPY Reinvestment Dashboard
 # Single-page dashboard style
 #
-# Features
-# - KRW / USD display toggle
-# - SCHD initial amount input
-# - SCHD dividend simulation
-# - Tax-adjusted dividend cash flow
-# - Reinvestment into QQQ / SPY by adjustable weights
-# - 10Y / 20Y / 30Y horizon
-# - Top summary box
-# - Total asset stacked bar + monthly dividend line
-# - Monthly dividend cash-flow line
-# - Month range slider
-# - Optional raw tables
+# Updated:
+# - Final summary updates when the month range changes
+# - Summary follows the selected month window (df_view)
 #
 # Run:
 #   streamlit run streamlit_app.py
@@ -32,7 +23,6 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 
 # ============================================================
@@ -55,7 +45,6 @@ st.caption(
 # ============================================================
 EOK_KRW = 100_000_000
 MAN_KRW = 10_000
-
 
 # ============================================================
 # Data class
@@ -116,10 +105,6 @@ def format_eok(value: float) -> str:
 
 def format_man(value: float) -> str:
     return f"{value:,.1f} 만원"
-
-
-def format_percent(value: float) -> str:
-    return f"{value:,.2f}%"
 
 
 # ============================================================
@@ -239,10 +224,7 @@ def build_summary(df: pd.DataFrame) -> Dict[str, float]:
 # ============================================================
 # Chart builders
 # ============================================================
-def make_total_asset_chart(
-    df: pd.DataFrame,
-    display_mode: str,
-) -> go.Figure:
+def make_total_asset_chart(df: pd.DataFrame, display_mode: str) -> go.Figure:
     fig = go.Figure()
 
     if display_mode == "KRW":
@@ -270,7 +252,6 @@ def make_total_asset_chart(
                 line=dict(width=3),
             )
         )
-
         fig.update_layout(
             title="Total Asset Growth (Eok KRW)",
             yaxis=dict(title="Asset Value (Eok KRW)"),
@@ -281,7 +262,6 @@ def make_total_asset_chart(
                 showgrid=False,
             ),
         )
-
     else:
         fig.add_trace(
             go.Bar(
@@ -307,7 +287,6 @@ def make_total_asset_chart(
                 line=dict(width=3),
             )
         )
-
         fig.update_layout(
             title="Total Asset Growth (USD)",
             yaxis=dict(title="Asset Value (USD)"),
@@ -324,21 +303,13 @@ def make_total_asset_chart(
         height=500,
         template="plotly_white",
         margin=dict(l=50, r=70, t=70, b=50),
-        legend=dict(
-            orientation="v",
-            x=1.02,
-            y=1,
-        ),
+        legend=dict(orientation="v", x=1.02, y=1),
         xaxis=dict(title="Month"),
     )
-
     return fig
 
 
-def make_dividend_chart(
-    df: pd.DataFrame,
-    display_mode: str,
-) -> go.Figure:
+def make_dividend_chart(df: pd.DataFrame, display_mode: str) -> go.Figure:
     fig = go.Figure()
 
     if display_mode == "KRW":
@@ -377,7 +348,6 @@ def make_dividend_chart(
         xaxis=dict(title="Month"),
         showlegend=False,
     )
-
     return fig
 
 
@@ -409,7 +379,6 @@ def build_display_tables(df: pd.DataFrame, display_mode: str) -> dict[str, pd.Da
                 "Cumulative Net Dividend (KRW)",
             ]
         ].copy()
-
     else:
         main_table = df[
             [
@@ -439,10 +408,7 @@ def build_display_tables(df: pd.DataFrame, display_mode: str) -> dict[str, pd.Da
         numeric_cols = table.select_dtypes(include=[np.number]).columns
         table[numeric_cols] = table[numeric_cols].round(4)
 
-    return {
-        "main": main_table,
-        "dividend": dividend_table,
-    }
+    return {"main": main_table, "dividend": dividend_table}
 
 
 # ============================================================
@@ -554,7 +520,7 @@ horizon_years = st.sidebar.selectbox(
 show_tables = st.sidebar.checkbox("Show raw tables", value=True)
 
 # ============================================================
-# Compute
+# Compute full data
 # ============================================================
 inputs = SimulationInputs(
     initial_krw=float(initial_krw),
@@ -571,8 +537,6 @@ inputs = SimulationInputs(
 )
 
 df = build_simulation_dataframe(inputs)
-summary = build_summary(df)
-tables = build_display_tables(df, display_mode)
 
 # ============================================================
 # Month range slider
@@ -586,7 +550,15 @@ month_range = st.slider(
     step=1,
 )
 
-df_view = df[(df["Month"] >= month_range[0]) & (df["Month"] <= month_range[1])].copy()
+selected_start, selected_end = month_range
+
+df_view = df[(df["Month"] >= selected_start) & (df["Month"] <= selected_end)].copy()
+
+# Summary now follows the selected range
+summary = build_summary(df_view)
+
+# Tables
+tables = build_display_tables(df, display_mode)
 tables_view = build_display_tables(df_view, display_mode)
 
 # ============================================================
@@ -604,14 +576,14 @@ with top_mid:
 with top_right:
     if display_mode == "KRW":
         summary_text = (
-            f"**{summary['month']} months result**\n\n"
-            f"Total Asset: {format_eok(summary['total_asset_eok'])}\n\n"
+            f"**Selected Range: {selected_start}m ~ {selected_end}m**\n\n"
+            f"Final Asset: {format_eok(summary['total_asset_eok'])}\n\n"
             f"Monthly Dividend: {format_man(summary['monthly_dividend_man'])}"
         )
     else:
         summary_text = (
-            f"**{summary['month']} months result**\n\n"
-            f"Total Asset: {format_usd(summary['total_asset_usd'])}\n\n"
+            f"**Selected Range: {selected_start}m ~ {selected_end}m**\n\n"
+            f"Final Asset: {format_usd(summary['total_asset_usd'])}\n\n"
             f"Monthly Dividend: {format_usd(summary['monthly_dividend_usd'])}"
         )
 
@@ -688,6 +660,7 @@ with st.expander("Model Notes / Assumptions"):
 - Dividends are generated from SCHD and reinvested into QQQ / SPY.
 - Reinvested assets are compounded monthly using the QQQ / SPY CAGR assumptions.
 - Total Asset = SCHD Principal + Reinvested Assets.
+- The top summary box updates based on the selected month range.
 - KRW mode uses:
   - **Eok KRW** for asset values
   - **Man KRW** for monthly dividends
