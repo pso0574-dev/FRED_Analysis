@@ -1,11 +1,19 @@
 # streamlit_app.py
 # ============================================================
 # SCHD Dividend -> QQQ/SPY DCA Simulator
-# Updated version:
-# - Charts in a separate tab
-# - Dual axis charts (USD left / KRW right)
-# - Better title / legend spacing
-# - Monthly bar + trend line combo charts
+# Full English-based code
+#
+# Features
+# - Adjustable SCHD initial amount in KRW
+# - USD conversion via editable FX rate
+# - SCHD monthly / quarterly dividend simulation
+# - Tax-adjusted dividend cash flow
+# - QQQ / SPY allocation slider
+# - 10Y / 20Y / 30Y horizon comparison
+# - Separate Dashboard / Charts / Tables tabs
+# - Dual-axis charts (USD left / KRW right)
+# - Plot titles placed outside charts to avoid overlap
+# - Related table below each chart
 #
 # Run:
 #   streamlit run streamlit_app.py
@@ -18,7 +26,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -37,8 +45,8 @@ st.set_page_config(
 
 st.title("💵 SCHD Dividend → QQQ / SPY DCA Simulator")
 st.caption(
-    "Simulate SCHD dividend cash flow, cumulative dividend income, "
-    "and long-term QQQ/SPY compounding with adjustable allocation."
+    "Plan SCHD dividend cash flow, cumulative contributions, and long-term "
+    "QQQ / SPY compounding with adjustable assumptions."
 )
 
 # ============================================================
@@ -176,7 +184,18 @@ def build_simulation_dataframe(inputs: SimulationInputs) -> pd.DataFrame:
             }
         )
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+
+    df["Total Monthly Contribution (USD)"] = df["QQQ Contribution (USD)"] + df["SPY Contribution (USD)"]
+    df["Total Monthly Contribution (KRW)"] = df["QQQ Contribution (KRW)"] + df["SPY Contribution (KRW)"]
+    df["Total Cumulative Contribution (USD)"] = (
+        df["Cumulative QQQ Contribution (USD)"] + df["Cumulative SPY Contribution (USD)"]
+    )
+    df["Total Cumulative Contribution (KRW)"] = (
+        df["Cumulative QQQ Contribution (KRW)"] + df["Cumulative SPY Contribution (KRW)"]
+    )
+
+    return df
 
 
 def build_summary_metrics(df: pd.DataFrame) -> Dict[str, float]:
@@ -222,8 +241,8 @@ def build_horizon_comparison(
             payout_mode=base_inputs.payout_mode,
         )
 
-        df = build_simulation_dataframe(temp_inputs)
-        last_row = df.iloc[-1]
+        temp_df = build_simulation_dataframe(temp_inputs)
+        last_row = temp_df.iloc[-1]
 
         rows.append(
             {
@@ -248,6 +267,101 @@ def build_horizon_comparison(
 
 
 # ============================================================
+# Table helpers
+# ============================================================
+def prepare_plot_related_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    temp = df.copy()
+
+    dividend_table = temp[
+        [
+            "Month",
+            "Year",
+            "Net Dividend (USD)",
+            "Net Dividend (KRW)",
+            "Cumulative Net Dividend (USD)",
+            "Cumulative Net Dividend (KRW)",
+        ]
+    ].copy()
+
+    contribution_table = temp[
+        [
+            "Month",
+            "Year",
+            "Total Monthly Contribution (USD)",
+            "Total Monthly Contribution (KRW)",
+            "Total Cumulative Contribution (USD)",
+            "Total Cumulative Contribution (KRW)",
+        ]
+    ].copy()
+
+    qqq_table = temp[
+        [
+            "Month",
+            "Year",
+            "QQQ Contribution (USD)",
+            "QQQ Contribution (KRW)",
+            "Cumulative QQQ Contribution (USD)",
+            "Cumulative QQQ Contribution (KRW)",
+        ]
+    ].copy()
+
+    spy_table = temp[
+        [
+            "Month",
+            "Year",
+            "SPY Contribution (USD)",
+            "SPY Contribution (KRW)",
+            "Cumulative SPY Contribution (USD)",
+            "Cumulative SPY Contribution (KRW)",
+        ]
+    ].copy()
+
+    growth_table = temp[
+        [
+            "Month",
+            "Year",
+            "QQQ Value (USD)",
+            "QQQ Value (KRW)",
+            "SPY Value (USD)",
+            "SPY Value (KRW)",
+            "Total Portfolio Value (USD)",
+            "Total Portfolio Value (KRW)",
+            "Total Contribution (USD)",
+            "Total Contribution (KRW)",
+            "Total Gain (USD)",
+            "Total Gain (KRW)",
+            "Total Return (%)",
+        ]
+    ].copy()
+
+    for tdf in [dividend_table, contribution_table, qqq_table, spy_table, growth_table]:
+        numeric_cols = tdf.select_dtypes(include=[np.number]).columns
+        tdf[numeric_cols] = tdf[numeric_cols].round(2)
+
+    return {
+        "dividend": dividend_table,
+        "contribution": contribution_table,
+        "qqq": qqq_table,
+        "spy": spy_table,
+        "growth": growth_table,
+    }
+
+
+def show_related_table(
+    title: str,
+    table_df: pd.DataFrame,
+    show_full_table: bool = False,
+    default_rows: int = 12,
+    height: int = 260,
+) -> None:
+    st.markdown(f"**{title}**")
+    if show_full_table:
+        st.dataframe(table_df, use_container_width=True, height=height)
+    else:
+        st.dataframe(table_df.tail(default_rows), use_container_width=True, height=height)
+
+
+# ============================================================
 # Chart functions
 # ============================================================
 def make_monthly_bar_line_dual_axis_chart(
@@ -257,9 +371,10 @@ def make_monthly_bar_line_dual_axis_chart(
     line_usd_col: str,
     bar_krw_col: str,
     line_krw_col: str,
-    title: str,
+    title: Optional[str] = None,
     left_title: str = "USD",
     right_title: str = "KRW",
+    show_legend: bool = True,
 ) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
@@ -267,8 +382,8 @@ def make_monthly_bar_line_dual_axis_chart(
         go.Bar(
             x=df[x_col],
             y=df[bar_usd_col],
-            name=f"{bar_usd_col}",
-            opacity=0.50,
+            name=bar_usd_col,
+            opacity=0.55,
         ),
         secondary_y=False,
     )
@@ -278,8 +393,8 @@ def make_monthly_bar_line_dual_axis_chart(
             x=df[x_col],
             y=df[line_usd_col],
             mode="lines",
-            name=f"{line_usd_col}",
-            line=dict(width=2),
+            name=line_usd_col,
+            line=dict(width=2.5),
         ),
         secondary_y=False,
     )
@@ -288,8 +403,8 @@ def make_monthly_bar_line_dual_axis_chart(
         go.Bar(
             x=df[x_col],
             y=df[bar_krw_col],
-            name=f"{bar_krw_col}",
-            opacity=0.25,
+            name=bar_krw_col,
+            opacity=0.22,
             visible="legendonly",
         ),
         secondary_y=True,
@@ -300,7 +415,7 @@ def make_monthly_bar_line_dual_axis_chart(
             x=df[x_col],
             y=df[line_krw_col],
             mode="lines",
-            name=f"{line_krw_col}",
+            name=line_krw_col,
             line=dict(width=2, dash="dot"),
             visible="legendonly",
         ),
@@ -308,22 +423,19 @@ def make_monthly_bar_line_dual_axis_chart(
     )
 
     fig.update_layout(
-        title=dict(
-            text=title,
-            x=0.02,
-            xanchor="left",
-            y=0.95,
-        ),
-        height=470,
+        title=title,
+        height=430,
         template="plotly_white",
         barmode="overlay",
-        margin=dict(l=60, r=70, t=90, b=50),
+        showlegend=show_legend,
+        margin=dict(l=60, r=70, t=25 if title is None else 80, b=50),
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.08,
+            y=1.02,
             xanchor="left",
             x=0,
+            font=dict(size=11),
         ),
     )
 
@@ -334,7 +446,11 @@ def make_monthly_bar_line_dual_axis_chart(
     return fig
 
 
-def make_dual_axis_growth_chart(df: pd.DataFrame, title: str) -> go.Figure:
+def make_dual_axis_growth_chart(
+    df: pd.DataFrame,
+    title: Optional[str] = None,
+    show_legend: bool = True,
+) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
     fig.add_trace(
@@ -381,22 +497,19 @@ def make_dual_axis_growth_chart(df: pd.DataFrame, title: str) -> go.Figure:
     )
 
     fig.update_layout(
-        title=dict(
-            text=title,
-            x=0.02,
-            xanchor="left",
-            y=0.95,
-        ),
-        height=470,
+        title=title,
+        height=430,
         template="plotly_white",
         barmode="group",
-        margin=dict(l=60, r=70, t=90, b=50),
+        showlegend=show_legend,
+        margin=dict(l=60, r=70, t=25 if title is None else 80, b=50),
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.08,
+            y=1.02,
             xanchor="left",
             x=0,
+            font=dict(size=11),
         ),
     )
 
@@ -407,7 +520,11 @@ def make_dual_axis_growth_chart(df: pd.DataFrame, title: str) -> go.Figure:
     return fig
 
 
-def make_horizon_bar_line_dual_axis_chart(horizon_df: pd.DataFrame, title: str) -> go.Figure:
+def make_horizon_bar_line_dual_axis_chart(
+    horizon_df: pd.DataFrame,
+    title: Optional[str] = None,
+    show_legend: bool = True,
+) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
     fig.add_trace(
@@ -454,22 +571,19 @@ def make_horizon_bar_line_dual_axis_chart(horizon_df: pd.DataFrame, title: str) 
     )
 
     fig.update_layout(
-        title=dict(
-            text=title,
-            x=0.02,
-            xanchor="left",
-            y=0.95,
-        ),
-        height=470,
+        title=title,
+        height=430,
         template="plotly_white",
         barmode="group",
-        margin=dict(l=60, r=70, t=90, b=50),
+        showlegend=show_legend,
+        margin=dict(l=60, r=70, t=25 if title is None else 80, b=50),
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.08,
+            y=1.02,
             xanchor="left",
             x=0,
+            font=dict(size=11),
         ),
     )
 
@@ -481,7 +595,7 @@ def make_horizon_bar_line_dual_axis_chart(horizon_df: pd.DataFrame, title: str) 
 
 
 # ============================================================
-# Sidebar inputs
+# Sidebar
 # ============================================================
 st.sidebar.header("Input Parameters")
 
@@ -590,7 +704,7 @@ show_krw = st.sidebar.checkbox("Show KRW tables", value=True)
 show_full_table = st.sidebar.checkbox("Show full monthly tables", value=False)
 
 # ============================================================
-# Inputs object
+# Build inputs
 # ============================================================
 inputs = SimulationInputs(
     initial_krw=float(initial_krw),
@@ -612,9 +726,14 @@ inputs = SimulationInputs(
 df = build_simulation_dataframe(inputs)
 summary = build_summary_metrics(df)
 horizon_df = build_horizon_comparison(inputs, horizons=(10, 20, 30))
+plot_tables = prepare_plot_related_tables(df)
+
+for table_df in [horizon_df]:
+    numeric_cols = table_df.select_dtypes(include=[np.number]).columns
+    table_df[numeric_cols] = table_df[numeric_cols].round(2)
 
 # ============================================================
-# Summary
+# Summary metrics
 # ============================================================
 st.subheader("Summary")
 
@@ -634,7 +753,7 @@ col9.metric(f"{inputs.horizon_years}Y Cum. Net Dividend (USD)", format_currency(
 col10.metric(f"{inputs.horizon_years}Y Final Gain (USD)", format_currency(summary["final_total_gain_usd"], "USD"))
 
 # ============================================================
-# Prepare tables
+# Main tables for dedicated table tab
 # ============================================================
 dividend_table = df[
     [
@@ -667,6 +786,10 @@ allocation_table = df[
         "Cumulative QQQ Contribution (KRW)",
         "Cumulative SPY Contribution (USD)",
         "Cumulative SPY Contribution (KRW)",
+        "Total Monthly Contribution (USD)",
+        "Total Monthly Contribution (KRW)",
+        "Total Cumulative Contribution (USD)",
+        "Total Cumulative Contribution (KRW)",
     ]
 ].copy()
 
@@ -692,12 +815,12 @@ compound_table = df[
     ]
 ].copy()
 
-for table_df in [dividend_table, allocation_table, compound_table, horizon_df]:
+for table_df in [dividend_table, allocation_table, compound_table]:
     numeric_cols = table_df.select_dtypes(include=[np.number]).columns
     table_df[numeric_cols] = table_df[numeric_cols].round(2)
 
 # ============================================================
-# Main tabs
+# Tabs
 # ============================================================
 main_tab1, main_tab2, main_tab3 = st.tabs(
     [
@@ -716,6 +839,7 @@ with main_tab1:
     dash_col1, dash_col2 = st.columns(2)
 
     with dash_col1:
+        st.markdown("#### Monthly Net Dividend + Cumulative Net Dividend")
         fig1 = make_monthly_bar_line_dual_axis_chart(
             df=df,
             x_col="Month",
@@ -723,16 +847,20 @@ with main_tab1:
             line_usd_col="Cumulative Net Dividend (USD)",
             bar_krw_col="Net Dividend (KRW)",
             line_krw_col="Cumulative Net Dividend (KRW)",
-            title="Monthly Net Dividend + Cumulative Net Dividend",
+            title=None,
+            show_legend=False,
         )
         st.plotly_chart(fig1, use_container_width=True)
 
-    with dash_col2:
-        df["Total Monthly Contribution (USD)"] = df["QQQ Contribution (USD)"] + df["SPY Contribution (USD)"]
-        df["Total Monthly Contribution (KRW)"] = df["QQQ Contribution (KRW)"] + df["SPY Contribution (KRW)"]
-        df["Total Cumulative Contribution (USD)"] = df["Cumulative QQQ Contribution (USD)"] + df["Cumulative SPY Contribution (USD)"]
-        df["Total Cumulative Contribution (KRW)"] = df["Cumulative QQQ Contribution (KRW)"] + df["Cumulative SPY Contribution (KRW)"]
+        show_related_table(
+            "Dividend Table (latest months)",
+            plot_tables["dividend"],
+            show_full_table=show_full_table,
+            default_rows=12,
+        )
 
+    with dash_col2:
+        st.markdown("#### Monthly Contribution + Cumulative Contribution")
         fig2 = make_monthly_bar_line_dual_axis_chart(
             df=df,
             x_col="Month",
@@ -740,9 +868,17 @@ with main_tab1:
             line_usd_col="Total Cumulative Contribution (USD)",
             bar_krw_col="Total Monthly Contribution (KRW)",
             line_krw_col="Total Cumulative Contribution (KRW)",
-            title="Monthly Contribution + Cumulative Contribution",
+            title=None,
+            show_legend=False,
         )
         st.plotly_chart(fig2, use_container_width=True)
+
+        show_related_table(
+            "Contribution Table (latest months)",
+            plot_tables["contribution"],
+            show_full_table=show_full_table,
+            default_rows=12,
+        )
 
 # ============================================================
 # Charts tab
@@ -760,6 +896,7 @@ with main_tab2:
     )
 
     with chart_tab1:
+        st.markdown("#### SCHD Monthly Net Dividend and Cumulative Net Dividend")
         fig_dividend = make_monthly_bar_line_dual_axis_chart(
             df=df,
             x_col="Month",
@@ -767,14 +904,23 @@ with main_tab2:
             line_usd_col="Cumulative Net Dividend (USD)",
             bar_krw_col="Net Dividend (KRW)",
             line_krw_col="Cumulative Net Dividend (KRW)",
-            title="SCHD Monthly Net Dividend and Cumulative Net Dividend",
+            title=None,
+            show_legend=True,
         )
         st.plotly_chart(fig_dividend, use_container_width=True)
+
+        show_related_table(
+            "Dividend Table",
+            plot_tables["dividend"],
+            show_full_table=show_full_table,
+            default_rows=24,
+        )
 
     with chart_tab2:
         alloc_col1, alloc_col2 = st.columns(2)
 
         with alloc_col1:
+            st.markdown("#### QQQ Monthly Contribution and Cumulative Contribution")
             fig_alloc_qqq = make_monthly_bar_line_dual_axis_chart(
                 df=df,
                 x_col="Month",
@@ -782,11 +928,20 @@ with main_tab2:
                 line_usd_col="Cumulative QQQ Contribution (USD)",
                 bar_krw_col="QQQ Contribution (KRW)",
                 line_krw_col="Cumulative QQQ Contribution (KRW)",
-                title="QQQ Monthly Contribution and Cumulative Contribution",
+                title=None,
+                show_legend=True,
             )
             st.plotly_chart(fig_alloc_qqq, use_container_width=True)
 
+            show_related_table(
+                "QQQ Allocation Table",
+                plot_tables["qqq"],
+                show_full_table=show_full_table,
+                default_rows=24,
+            )
+
         with alloc_col2:
+            st.markdown("#### SPY Monthly Contribution and Cumulative Contribution")
             fig_alloc_spy = make_monthly_bar_line_dual_axis_chart(
                 df=df,
                 x_col="Month",
@@ -794,26 +949,48 @@ with main_tab2:
                 line_usd_col="Cumulative SPY Contribution (USD)",
                 bar_krw_col="SPY Contribution (KRW)",
                 line_krw_col="Cumulative SPY Contribution (KRW)",
-                title="SPY Monthly Contribution and Cumulative Contribution",
+                title=None,
+                show_legend=True,
             )
             st.plotly_chart(fig_alloc_spy, use_container_width=True)
 
+            show_related_table(
+                "SPY Allocation Table",
+                plot_tables["spy"],
+                show_full_table=show_full_table,
+                default_rows=24,
+            )
+
     with chart_tab3:
+        st.markdown(f"#### QQQ / SPY Compounded Growth ({inputs.horizon_years} Years)")
         fig_growth = make_dual_axis_growth_chart(
             df=df,
-            title=f"QQQ / SPY Compounded Growth ({inputs.horizon_years} Years)",
+            title=None,
+            show_legend=True,
         )
         st.plotly_chart(fig_growth, use_container_width=True)
 
+        show_related_table(
+            "Compound Growth Table",
+            plot_tables["growth"],
+            show_full_table=show_full_table,
+            default_rows=24,
+        )
+
     with chart_tab4:
+        st.markdown("#### Horizon Comparison: Contribution and Final Value")
         fig_horizon = make_horizon_bar_line_dual_axis_chart(
             horizon_df=horizon_df,
-            title="Horizon Comparison: Contribution and Final Value",
+            title=None,
+            show_legend=True,
         )
         st.plotly_chart(fig_horizon, use_container_width=True)
 
+        st.markdown("**Horizon Comparison Table**")
+        st.dataframe(horizon_df, use_container_width=True, height=220)
+
 # ============================================================
-# Tables and download tab
+# Tables / download tab
 # ============================================================
 with main_tab3:
     table_tab1, table_tab2, table_tab3, table_tab4 = st.tabs(
@@ -828,7 +1005,10 @@ with main_tab3:
     with table_tab1:
         st.markdown("### SCHD Principal and Dividend Table")
         if show_usd and show_krw:
-            st.dataframe(dividend_table if show_full_table else dividend_table.head(120), use_container_width=True)
+            st.dataframe(
+                dividend_table if show_full_table else dividend_table.head(120),
+                use_container_width=True,
+            )
         elif show_usd:
             usd_cols = [
                 "Month",
@@ -840,7 +1020,10 @@ with main_tab3:
                 "Net Dividend (USD)",
                 "Cumulative Net Dividend (USD)",
             ]
-            st.dataframe(dividend_table[usd_cols] if show_full_table else dividend_table[usd_cols].head(120), use_container_width=True)
+            st.dataframe(
+                dividend_table[usd_cols] if show_full_table else dividend_table[usd_cols].head(120),
+                use_container_width=True,
+            )
         elif show_krw:
             krw_cols = [
                 "Month",
@@ -850,15 +1033,24 @@ with main_tab3:
                 "Net Dividend (KRW)",
                 "Cumulative Net Dividend (KRW)",
             ]
-            st.dataframe(dividend_table[krw_cols] if show_full_table else dividend_table[krw_cols].head(120), use_container_width=True)
+            st.dataframe(
+                dividend_table[krw_cols] if show_full_table else dividend_table[krw_cols].head(120),
+                use_container_width=True,
+            )
 
     with table_tab2:
         st.markdown("### Dividend Allocation to QQQ / SPY")
-        st.dataframe(allocation_table if show_full_table else allocation_table.head(120), use_container_width=True)
+        st.dataframe(
+            allocation_table if show_full_table else allocation_table.head(120),
+            use_container_width=True,
+        )
 
     with table_tab3:
         st.markdown("### QQQ / SPY Compound Growth Table")
-        st.dataframe(compound_table if show_full_table else compound_table.head(120), use_container_width=True)
+        st.dataframe(
+            compound_table if show_full_table else compound_table.head(120),
+            use_container_width=True,
+        )
 
         st.markdown("### 10Y / 20Y / 30Y Comparison")
         st.dataframe(horizon_df, use_container_width=True)
@@ -910,16 +1102,16 @@ with st.expander("Model Notes / Assumptions"):
     st.markdown(
         """
 - This version keeps the **SCHD principal constant**.
-- SCHD dividend cash flow is estimated using:
+- SCHD dividend cash flow is estimated from:
   - annual dividend yield
   - tax rate
   - optional dividend growth rate
-- QQQ/SPY growth is modeled using **monthly compounding** from annual CAGR inputs.
-- In **Monthly normalized** mode, dividend is spread evenly across 12 months.
-- In **Actual quarterly payout** mode, dividend is paid only in months 3, 6, 9, 12.
-- The charts use:
-  - **left axis = USD**
-  - **right axis = KRW**
-- KRW traces are available in the legend and are initially set to **legend only** on several charts to reduce clutter.
+- QQQ and SPY are modeled with **monthly compounding** from annual CAGR assumptions.
+- In **Monthly normalized** mode, dividends are spread evenly over 12 months.
+- In **Actual quarterly payout** mode, dividends are paid only in months 3, 6, 9, and 12.
+- In Quick View, chart titles are displayed **outside** the plots to avoid overlap.
+- Each chart has a related table shown directly below it.
+- USD is displayed on the left axis and KRW on the right axis.
+- Some KRW traces are set to **legend only** by default to reduce clutter.
         """
     )
